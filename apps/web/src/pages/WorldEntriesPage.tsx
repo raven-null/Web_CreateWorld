@@ -115,9 +115,6 @@ export default function WorldEntriesPage() {
             {category.name}
           </button>
         ))}
-        <Link to={`/w/${worldId}`} className="entry-cat" style={{ marginTop: 12 }}>
-          ← 返回世界主页
-        </Link>
       </aside>
 
       <section className="entries-main">

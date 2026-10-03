@@ -1391,3 +1391,115 @@ mark {
     flex-wrap: wrap;
   }
 }
+
+/* ============ 世界区布局（侧边栏导航） ============ */
+.world-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 26px;
+  align-items: start;
+}
+
+.world-sidebar {
+  position: sticky;
+  top: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.world-sidebar-back {
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.world-sidebar-name {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  margin: 8px 0 4px;
+}
+
+.world-sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+  width: 100%;
+}
+
+.world-sidebar-nav a {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.world-sidebar-nav a:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.world-sidebar-nav a.active {
+  background: var(--bg-card);
+  color: var(--accent);
+}
+
+.world-content {
+  min-width: 0;
+}
+
+/* 世界内条目页：压缩分类栏，避免与侧边栏叠加过宽 */
+.world-content .entries-layout {
+  grid-template-columns: 150px minmax(0, 1fr);
+}
+
+@media (max-width: 1024px) {
+  .world-content .entries-layout {
+    grid-template-columns: 140px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .world-layout {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .world-sidebar {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .world-sidebar-back {
+    width: 100%;
+  }
+
+  .world-sidebar-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 8px;
+    margin-top: 4px;
+    width: 100%;
+    padding-bottom: 4px;
+  }
+
+  .world-sidebar-nav a {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 14px;
+    min-height: 40px;
+  }
+
+  .world-content .entries-layout {
+    grid-template-columns: 1fr;
+  }
+}

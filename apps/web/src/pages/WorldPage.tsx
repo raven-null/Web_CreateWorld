@@ -128,23 +128,6 @@ export default function WorldPage() {
               登录后参与编写
             </Link>
           ))}
-        {(world.myRole === "owner" || world.myRole === "admin") && (
-          <Link className="btn ghost" to={`/w/${world.id}/settings`}>
-            世界设置
-          </Link>
-        )}
-        <Link className="btn ghost" to={`/w/${world.id}/graph`}>
-          关系图
-        </Link>
-        <Link className="btn ghost" to={`/w/${world.id}/timeline`}>
-          时间线
-        </Link>
-        <Link className="btn ghost" to={`/w/${world.id}/maps`}>
-          地图
-        </Link>
-        <Link className="btn ghost" to={`/w/${world.id}/search`}>
-          搜索
-        </Link>
         {session && world.myRole === null && (
           <button type="button" className="btn ghost" onClick={() => setReportOpen(true)}>
             举报

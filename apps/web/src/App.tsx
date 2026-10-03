@@ -1,5 +1,6 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import WorldLayout from "./components/WorldLayout";
 import AdminPage from "./pages/AdminPage";
 import DiscoverPage from "./pages/DiscoverPage";
 import DraftsPage from "./pages/DraftsPage";
@@ -34,16 +35,19 @@ export default function App() {
           <Route path="worlds" element={<MyWorldsPage />} />
           <Route path="drafts" element={<DraftsPage />} />
           <Route path="worlds/new" element={<NewWorldPage />} />
-          <Route path="w/:worldId" element={<WorldPage />} />
-          <Route path="w/:worldId/settings" element={<WorldSettingsPage />} />
-          <Route path="w/:worldId/graph" element={<WorldGraphPage />} />
-          <Route path="w/:worldId/maps" element={<MapsPage />} />
-          <Route path="w/:worldId/timeline" element={<WorldTimelinePage />} />
-          <Route path="w/:worldId/search" element={<SearchPage />} />
-          <Route path="w/:worldId/entries" element={<WorldEntriesPage />} />
-          <Route path="w/:worldId/entries/:entryId" element={<EntryViewPage />} />
+          <Route path="w/:worldId" element={<WorldLayout />}>
+            <Route index element={<WorldPage />} />
+            <Route path="settings" element={<WorldSettingsPage />} />
+            <Route path="graph" element={<WorldGraphPage />} />
+            <Route path="maps" element={<MapsPage />} />
+            <Route path="timeline" element={<WorldTimelinePage />} />
+            <Route path="search" element={<SearchPage />} />
+            <Route path="entries" element={<WorldEntriesPage />} />
+            <Route path="entries/:entryId" element={<EntryViewPage />} />
+            <Route path="entries/:entryId/versions" element={<EntryVersionsPage />} />
+          </Route>
+          {/* 条目编辑页独立全宽（写作专注，不套世界侧边栏） */}
           <Route path="w/:worldId/entries/:entryId/edit" element={<EntryEditPage />} />
-          <Route path="w/:worldId/entries/:entryId/versions" element={<EntryVersionsPage />} />
           <Route path="admin" element={<AdminPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
