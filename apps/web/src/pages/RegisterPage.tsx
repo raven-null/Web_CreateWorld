@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { authClient } from "../lib/auth-client";
+import { translateAuthError } from "../lib/auth-errors";
 import { api } from "../lib/api";
+import { showToast } from "../lib/toast";
 
 /** 邀请码校验结果 */
 interface InviteInfo {
@@ -66,6 +68,7 @@ export default function RegisterPage() {
         password,
       });
       if (signInError) {
+        showToast("warning", `注册成功，但自动登录失败：${translateAuthError(signInError.message)}`);
         navigate("/login");
         return;
       }

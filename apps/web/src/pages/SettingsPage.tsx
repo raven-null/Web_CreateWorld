@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
+import { translateAuthError } from "../lib/auth-errors";
 import { showToast } from "../lib/toast";
 
 /** AI 供应商预设（OpenAI 兼容地址） */
@@ -121,7 +122,7 @@ export default function SettingsPage() {
       revokeOtherSessions: true,
     });
     if (error) {
-      showToast("error", error.message ?? "修改失败");
+      showToast("error", translateAuthError(error.message));
       return;
     }
     setCurrentPassword("");

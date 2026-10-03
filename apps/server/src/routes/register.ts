@@ -111,7 +111,7 @@ registerRoutes.post("/register", async (c) => {
   } catch (error) {
     await releaseInvite();
     const message = error instanceof Error ? error.message : "";
-    if (/username/i.test(message)) {
+    if (/username|already exists|already taken/i.test(message)) {
       return fail(c, "用户名已被占用");
     }
     if (/email/i.test(message)) {

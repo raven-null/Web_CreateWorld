@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { authClient } from "../lib/auth-client";
+import { translateAuthError } from "../lib/auth-errors";
 
 /**
  * 登录页：用户名 + 密码（本期邮箱流程未启用）。
@@ -25,7 +26,7 @@ export default function LoginPage() {
 
     setSubmitting(false);
     if (signInError) {
-      setError(signInError.message ?? "登录失败，请检查用户名和密码");
+      setError(translateAuthError(signInError.message));
       return;
     }
     navigate("/worlds");
