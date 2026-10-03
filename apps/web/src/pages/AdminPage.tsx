@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
 import { formatTime, readUserRole } from "../lib/format";
+import { showToast } from "../lib/toast";
 
 /** 管理后台用户列表项 */
 interface AdminUser {
@@ -70,6 +71,7 @@ export default function AdminPage() {
         body: { scope: "platform", maxUses: 1 },
       });
       setNewCode(data.code);
+      showToast("success", `邀请码已生成：${data.code}`);
       await loadData();
     } catch (err) {
       setError((err as Error).message);

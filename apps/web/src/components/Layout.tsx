@@ -1,6 +1,7 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { authClient } from "../lib/auth-client";
 import { readUserRole } from "../lib/format";
+import ToastHost from "./ToastHost";
 
 /**
  * 全站布局：顶部导航 + 页面内容。
@@ -51,6 +52,7 @@ export default function Layout() {
       <main className="page">
         <Outlet />
       </main>
+      <ToastHost />
     </>
   );
 }

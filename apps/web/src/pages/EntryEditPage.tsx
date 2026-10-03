@@ -4,6 +4,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { ApiError, api } from "../lib/api";
 import { EntryLinkMark } from "../lib/entry-link-mark";
+import { showToast } from "../lib/toast";
 import { countDocWords, extractEntryLinks, parseDoc, type TipTapDoc } from "../lib/tiptap-json";
 
 /** 条目详情接口返回结构 */
@@ -121,6 +122,9 @@ export default function EntryEditPage() {
         setConflictVersion(null);
         setStatus("saved");
         window.localStorage.removeItem(draftKey);
+        if (options.createVersion) {
+          showToast("success", "已保存新版本");
+        }
       } catch (error) {
         if (error instanceof ApiError && error.status === 409) {
           const latest = (error.data as { latestVersion?: number } | undefined)?.latestVersion ?? null;
@@ -129,6 +133,9 @@ export default function EntryEditPage() {
           setStatus("conflict");
         } else {
           setStatus("error");
+          if (options.createVersion) {
+            showToast("error", "保存失败，将自动重试");
+          }
         }
       } finally {
         savingRef.current = false;
@@ -249,7 +256,7 @@ export default function EntryEditPage() {
       return;
     }
     if (editor?.state.selection.empty) {
-      window.alert("请先选中要关联的文字");
+      showToast("warning", "请先选中要关联的文字");
       return;
     }
     setLinkPanelOpen(true);
@@ -291,6 +298,7 @@ export default function EntryEditPage() {
     setConflictVersion(null);
     setStatus("saved");
     window.localStorage.removeItem(draftKey);
+    showToast("info", "已加载最新版本");
   };
 
   if (loadError) {

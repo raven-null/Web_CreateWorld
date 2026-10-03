@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
+import { showToast } from "../lib/toast";
 
 /**
  * 个人设置页：修改昵称与密码。
@@ -9,12 +10,10 @@ import { authClient } from "../lib/auth-client";
 export default function SettingsPage() {
   const { data: session, refetch } = authClient.useSession();
   const [displayName, setDisplayName] = useState("");
-  const [nameNotice, setNameNotice] = useState("");
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [passwordNotice, setPasswordNotice] = useState("");
 
   // 会话加载后填入当前昵称
   useEffect(() => {
@@ -35,22 +34,20 @@ export default function SettingsPage() {
   /** 保存昵称 */
   const handleSaveName = async (event: FormEvent) => {
     event.preventDefault();
-    setNameNotice("");
     try {
       await api("/api/me", { method: "PATCH", body: { displayName: displayName.trim() } });
       await refetch();
-      setNameNotice("昵称已更新");
+      showToast("success", "昵称已更新");
     } catch (err) {
-      setNameNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
   /** 修改密码（需验证当前密码） */
   const handleChangePassword = async (event: FormEvent) => {
     event.preventDefault();
-    setPasswordNotice("");
     if (newPassword !== confirmPassword) {
-      setPasswordNotice("两次输入的新密码不一致");
+      showToast("warning", "两次输入的新密码不一致");
       return;
     }
     const { error } = await authClient.changePassword({
@@ -59,13 +56,13 @@ export default function SettingsPage() {
       revokeOtherSessions: true,
     });
     if (error) {
-      setPasswordNotice(error.message ?? "修改失败");
+      showToast("error", error.message ?? "修改失败");
       return;
     }
     setCurrentPassword("");
     setNewPassword("");
     setConfirmPassword("");
-    setPasswordNotice("密码已修改，其他设备已退出登录");
+    showToast("success", "密码已修改，其他设备已退出登录");
   };
 
   return (
@@ -87,7 +84,6 @@ export default function SettingsPage() {
               required
             />
           </div>
-          {nameNotice && <div className="notice">{nameNotice}</div>}
           <button type="submit" className="btn">
             保存昵称
           </button>
@@ -130,7 +126,6 @@ export default function SettingsPage() {
               required
             />
           </div>
-          {passwordNotice && <div className="notice">{passwordNotice}</div>}
           <button type="submit" className="btn">
             修改密码
           </button>

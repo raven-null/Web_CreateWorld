@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ROLE_LABELS, type MemberRole } from "@create-world/core";
 import { api } from "../lib/api";
+import { showToast } from "../lib/toast";
 import TipTapRenderer from "../components/TipTapRenderer";
 import { parseDoc, type TipTapDoc } from "../lib/tiptap-json";
 
@@ -31,7 +32,6 @@ export default function EntryViewPage() {
   const navigate = useNavigate();
   const [detail, setDetail] = useState<EntryDetail | null>(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
 
   // 加载条目详情（从编辑页返回时重新拉取最新版本）
   useEffect(() => {
@@ -54,9 +54,9 @@ export default function EntryViewPage() {
         body: { protected: !detail.protected },
       });
       setDetail({ ...detail, protected: data.protected });
-      setNotice(data.protected ? "已开启保护：仅管理员可编辑" : "已取消保护");
+      showToast("success", data.protected ? "已开启保护：仅管理员可编辑" : "已取消保护");
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -69,7 +69,7 @@ export default function EntryViewPage() {
       await api(`/api/entries/${entryId}`, { method: "DELETE" });
       navigate(`/w/${worldId}/entries`);
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -122,8 +122,6 @@ export default function EntryViewPage() {
           )}
         </div>
       </div>
-
-      {notice && <div className="notice">{notice}</div>}
 
       <article className="entry-body">
         <TipTapRenderer

@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ROLE_LABELS, VISIBILITY_LABELS, type MemberRole, type WorldVisibility } from "@create-world/core";
 import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
+import { showToast } from "../lib/toast";
 
 /** 世界详情接口返回结构 */
 interface WorldDetail {
@@ -34,8 +35,6 @@ export default function WorldPage() {
   const [loading, setLoading] = useState(true);
   const [inviteRole, setInviteRole] = useState("editor");
   const [inviteCode, setInviteCode] = useState("");
-  const [inviteError, setInviteError] = useState("");
-  const [joinNotice, setJoinNotice] = useState("");
 
   // 世界 id 或登录状态变化时刷新详情
   useEffect(() => {
@@ -57,13 +56,13 @@ export default function WorldPage() {
     if (!worldId) {
       return;
     }
-    setJoinNotice("");
     try {
       await api(`/api/worlds/${worldId}/join`, { method: "POST" });
       const data = await api<WorldDetail>(`/api/worlds/${worldId}`);
       setWorld(data);
+      showToast("success", "已加入，可以开始编写了");
     } catch (err) {
-      setJoinNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -72,15 +71,15 @@ export default function WorldPage() {
     if (!worldId) {
       return;
     }
-    setInviteError("");
     try {
       const data = await api<{ code: string }>(`/api/worlds/${worldId}/invites`, {
         method: "POST",
         body: { role: inviteRole },
       });
       setInviteCode(data.code);
+      showToast("success", "邀请码已生成");
     } catch (err) {
-      setInviteError((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -133,7 +132,6 @@ export default function WorldPage() {
           </Link>
         )}
       </div>
-      {joinNotice && <div className="notice error">{joinNotice}</div>}
 
       <div className="section">
         <h2 className="section-title">分类</h2>
@@ -172,7 +170,6 @@ export default function WorldPage() {
               </>
             )}
           </div>
-          {inviteError && <div className="notice error">{inviteError}</div>}
         </div>
       )}
     </>

@@ -30,12 +30,18 @@ export async function api<T>(
   path: string,
   options: { method?: string; body?: unknown } = {},
 ): Promise<T> {
-  const response = await fetch(path, {
-    method: options.method ?? "GET",
-    headers: options.body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    credentials: "include",
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: options.method ?? "GET",
+      headers: options.body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      credentials: "include",
+    });
+  } catch {
+    // 网络层异常（断网、服务不可达）统一转为中文提示
+    throw new ApiError("网络异常，请检查连接后重试", 0);
+  }
 
   const payload = (await response.json().catch(() => null)) as ApiResponse<T> | null;
   if (!payload || !payload.ok) {

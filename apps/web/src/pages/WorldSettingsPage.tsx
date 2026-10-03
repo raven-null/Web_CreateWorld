@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ROLE_LABELS, VISIBILITY_LABELS, type MemberRole, type WorldVisibility } from "@create-world/core";
 import { api } from "../lib/api";
 import { formatTime } from "../lib/format";
+import { showToast } from "../lib/toast";
 
 /** 世界详情（设置页用到的字段） */
 interface WorldDetail {
@@ -47,7 +48,6 @@ export default function WorldSettingsPage() {
   const [bans, setBans] = useState<BanItem[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
 
   // 基本信息表单
   const [name, setName] = useState("");
@@ -109,16 +109,15 @@ export default function WorldSettingsPage() {
   /** 保存基本信息（名称 / 简介 / 可见性 / 标签） */
   const handleSaveBasic = async () => {
     setSavingBasic(true);
-    setNotice("");
     try {
       await api(`/api/worlds/${worldId}`, {
         method: "PATCH",
         body: { name, intro, visibility, tags: selectedTags },
       });
-      setNotice("已保存");
+      showToast("success", "基本信息已保存");
       await loadAll();
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     } finally {
       setSavingBasic(false);
     }
@@ -144,7 +143,7 @@ export default function WorldSettingsPage() {
       setNewCategoryName("");
       await loadAll();
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -157,7 +156,7 @@ export default function WorldSettingsPage() {
       await api(`/api/categories/${categoryId}`, { method: "PATCH", body: { name: value.trim() } });
       await loadAll();
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -170,7 +169,7 @@ export default function WorldSettingsPage() {
       await api(`/api/categories/${categoryId}`, { method: "DELETE" });
       await loadAll();
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -180,7 +179,7 @@ export default function WorldSettingsPage() {
       await api(`/api/worlds/${worldId}/members/${userId}`, { method: "PATCH", body: { role } });
       await loadAll();
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -194,7 +193,7 @@ export default function WorldSettingsPage() {
       await api(`/api/worlds/${worldId}/members/${member.userId}${ban ? "?ban=1" : ""}`, { method: "DELETE" });
       await loadAll();
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -204,7 +203,7 @@ export default function WorldSettingsPage() {
       await api(`/api/worlds/${worldId}/bans/${userId}`, { method: "DELETE" });
       await loadAll();
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -218,7 +217,7 @@ export default function WorldSettingsPage() {
       });
       setInviteCode(data.code);
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -231,7 +230,7 @@ export default function WorldSettingsPage() {
       await api(`/api/worlds/${worldId}`, { method: "DELETE" });
       navigate("/worlds");
     } catch (err) {
-      setNotice((err as Error).message);
+      showToast("error", (err as Error).message);
     }
   };
 
@@ -243,8 +242,6 @@ export default function WorldSettingsPage() {
       <p className="page-subtitle">
         <Link to={`/w/${worldId}`}>{world.name}</Link> · 创建者 {world.ownerName}
       </p>
-
-      {notice && <div className="notice">{notice}</div>}
 
       <div className="section">
         <h2 className="section-title">基本信息</h2>
