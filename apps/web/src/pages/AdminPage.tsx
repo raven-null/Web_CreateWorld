@@ -149,7 +149,8 @@ export default function AdminPage() {
         <h2 className="section-title">举报处理（待处理 {reports.length}）</h2>
         {reports.length === 0 && <div className="empty">没有待处理的举报</div>}
         {reports.length > 0 && (
-          <table className="table">
+          <div className="table-scroll">
+            <table className="table">
             <thead>
               <tr>
                 <th>被举报对象</th>
@@ -198,7 +199,8 @@ export default function AdminPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         )}
       </div>
 
@@ -210,7 +212,8 @@ export default function AdminPage() {
           </button>
           {newCode && <span className="code">{newCode}</span>}
         </div>
-        <table className="table" style={{ marginTop: 12 }}>
+        <div className="table-scroll">
+          <table className="table" style={{ marginTop: 12 }}>
           <thead>
             <tr>
               <th>邀请码</th>
@@ -235,12 +238,14 @@ export default function AdminPage() {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
 
       <div className="section">
         <h2 className="section-title">用户（最近 200 位）</h2>
-        <table className="table">
+        <div className="table-scroll">
+          <table className="table">
           <thead>
             <tr>
               <th>用户名</th>
@@ -289,7 +294,8 @@ export default function AdminPage() {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     </>
   );

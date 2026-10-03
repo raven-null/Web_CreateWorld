@@ -449,10 +449,11 @@ export default function WorldSettingsPage() {
 
       <div className="section">
         <h2 className="section-title">成员管理（{members.length}）</h2>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>成员</th>
+        <div className="table-scroll">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>成员</th>
               <th>角色</th>
               <th>加入方式</th>
               <th>加入时间</th>
@@ -499,7 +500,8 @@ export default function WorldSettingsPage() {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
 
       <div className="section">

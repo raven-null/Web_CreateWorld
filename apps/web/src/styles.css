@@ -1123,3 +1123,271 @@ mark {
   gap: 8px;
   align-items: center;
 }
+
+/* ============ 移动端导航按钮（桌面隐藏） ============ */
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 40px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.nav-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent-soft);
+}
+
+/* ============ 响应式：平板（≤1024px） ============ */
+@media (max-width: 1024px) {
+  .page {
+    padding: 22px;
+  }
+
+  .entries-layout {
+    grid-template-columns: 160px 1fr;
+    gap: 18px;
+  }
+}
+
+/* ============ 响应式：手机（≤768px） ============ */
+@media (max-width: 768px) {
+  /* 页面边距 */
+  .page {
+    padding: 14px 14px 32px;
+  }
+
+  .page-title {
+    font-size: 22px;
+  }
+
+  /* 顶部导航：汉堡菜单 */
+  .site-header {
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    gap: 10px;
+  }
+
+  .site-logo {
+    font-size: 18px;
+  }
+
+  .nav-toggle {
+    display: inline-flex;
+  }
+
+  .site-nav {
+    display: none;
+    order: 5;
+    width: 100%;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .site-nav.open {
+    display: flex;
+  }
+
+  .site-nav a {
+    display: flex;
+    align-items: center;
+    min-height: 42px;
+    padding: 8px 4px;
+  }
+
+  .site-user {
+    margin-left: auto;
+    gap: 8px;
+    font-size: 13px;
+  }
+
+  /* 卡片与发现页 */
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card-intro {
+    min-height: 0;
+  }
+
+  /* 条目列表：分类栏转横滑 chips */
+  .entries-layout {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .entries-sidebar {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 8px;
+    padding-bottom: 4px;
+  }
+
+  .entry-cat {
+    width: auto;
+    white-space: nowrap;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 8px 14px;
+  }
+
+  .entries-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .entries-toolbar input {
+    flex-basis: 100%;
+  }
+
+  /* 阅读页与详情头 */
+  .entry-view-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .entry-view-actions {
+    flex-wrap: wrap;
+  }
+
+  .entry-view-actions .btn {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+
+  .entry-body {
+    padding: 16px;
+  }
+
+  .rich-text {
+    font-size: 16px;
+  }
+
+  /* 编辑器 */
+  .editor-page {
+    max-width: none;
+  }
+
+  .editor-topbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .editor-title {
+    flex-basis: 100%;
+    font-size: 20px;
+  }
+
+  .editor-toolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .editor-toolbar button {
+    white-space: nowrap;
+    min-height: 40px;
+  }
+
+  /* 关系图 / 地图 */
+  .graph-wrap,
+  .map-view {
+    height: 58vh;
+    min-height: 320px;
+  }
+
+  .graph-toolbar {
+    gap: 8px;
+  }
+
+  /* 弹层与轻提示 */
+  .modal {
+    max-width: calc(100vw - 32px);
+    padding: 18px 16px;
+    max-height: 88vh;
+  }
+
+  .toast-host {
+    left: 12px;
+    right: 12px;
+    top: 58px;
+    max-width: none;
+  }
+
+  .toast {
+    width: 100%;
+  }
+
+  /* 表单 */
+  .form-row {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .search-form {
+    flex-wrap: wrap;
+  }
+
+  .search-form input {
+    flex-basis: 100%;
+  }
+
+  .create-entry-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* 表格：横向滚动（配合 .table-scroll 容器） */
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table-scroll .table {
+    min-width: 620px;
+  }
+
+  /* 触控目标 */
+  .btn {
+    min-height: 40px;
+  }
+
+  .btn.small {
+    min-height: 34px;
+    padding: 6px 14px;
+  }
+
+  /* 其他细节 */
+  .version-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .draft-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .timeline-track {
+    margin-left: 6px;
+    padding-left: 14px;
+  }
+
+  .timeline-card::before {
+    left: -21px;
+  }
+
+  .invite-box {
+    flex-wrap: wrap;
+  }
+}
