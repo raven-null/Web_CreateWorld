@@ -4,6 +4,7 @@ import { auth } from "./auth";
 import { sessionMiddleware, type AppVariables } from "./middleware/session";
 import adminRoutes from "./routes/admin";
 import discoverRoutes from "./routes/discover";
+import entryRoutes from "./routes/entries";
 import meRoutes from "./routes/me";
 import migrateRoutes from "./routes/migrate";
 import registerRoutes from "./routes/register";
@@ -34,6 +35,7 @@ app.route("/api", registerRoutes);
 app.route("/api", meRoutes);
 app.route("/api", discoverRoutes);
 app.route("/api", worldRoutes);
+app.route("/api", entryRoutes);
 app.route("/api/admin", adminRoutes);
 
 /** 健康检查与根路径提示 */

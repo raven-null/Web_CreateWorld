@@ -335,3 +335,386 @@ a:hover {
   letter-spacing: 2px;
   font-size: 16px;
 }
+
+/* ============ 条目列表 ============ */
+.entries-layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 24px;
+}
+
+.entries-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.entry-cat {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.entry-cat:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.entry-cat.active {
+  background: var(--bg-card);
+  color: var(--accent);
+}
+
+.entries-toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.entries-toolbar input {
+  flex: 1;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.create-entry-form {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.create-entry-form input,
+.create-entry-form select {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.entry-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.entry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.entry-row:hover {
+  background: var(--bg-soft);
+  text-decoration: none;
+}
+
+.entry-row-title {
+  font-size: 16px;
+}
+
+.entry-row-meta {
+  color: var(--text-faint);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* ============ 条目阅读 ============ */
+.entry-view-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.entry-view-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.entry-body {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 26px;
+  margin-top: 16px;
+}
+
+.rich-text {
+  line-height: 1.9;
+}
+
+.rich-text h1,
+.rich-text h2,
+.rich-text h3,
+.rich-text h4 {
+  font-family: var(--font-serif);
+  margin: 1.2em 0 0.5em;
+}
+
+.rich-text p {
+  margin: 0.7em 0;
+}
+
+.rich-text blockquote {
+  margin: 0.8em 0;
+  padding: 4px 14px;
+  border-left: 3px solid var(--accent-soft);
+  color: var(--text-dim);
+}
+
+.rich-text ul,
+.rich-text ol {
+  padding-left: 1.6em;
+}
+
+.rich-text pre {
+  background: var(--bg-soft);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.rich-text code {
+  font-family: Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.rich-text hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.2em 0;
+}
+
+.entry-link {
+  color: var(--accent);
+  border-bottom: 1px dashed var(--accent-soft);
+  cursor: pointer;
+}
+
+/* ============ 编辑器 ============ */
+.editor-page {
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.editor-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.editor-title {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 24px;
+  padding: 6px 2px;
+}
+
+.editor-title:focus {
+  outline: none;
+  border-bottom-color: var(--accent-soft);
+}
+
+.status-pill {
+  font-size: 13px;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.status-pill.status-saved {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.status-pill.status-conflict,
+.status-pill.status-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.editor-toolbar button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.editor-toolbar button:hover {
+  color: var(--text);
+  background: var(--bg-soft);
+}
+
+.editor-toolbar button.active {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+}
+
+.toolbar-divider {
+  width: 1px;
+  background: var(--border);
+  margin: 4px 6px;
+}
+
+.editor-content {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 420px;
+}
+
+.editor-content .ProseMirror {
+  padding: 18px 24px;
+  min-height: 420px;
+  outline: none;
+  line-height: 1.9;
+}
+
+.editor-content .ProseMirror blockquote {
+  border-left: 3px solid var(--accent-soft);
+  padding-left: 14px;
+  color: var(--text-dim);
+}
+
+.editor-content .ProseMirror pre {
+  background: var(--bg-soft);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+}
+
+.editor-footer {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-faint);
+  font-size: 13px;
+  padding: 10px 2px;
+}
+
+.link-panel {
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.link-panel-head {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.link-panel-head input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 7px 10px;
+  font-family: inherit;
+}
+
+.link-panel-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.link-panel-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.link-panel-item:hover {
+  background: var(--bg-card);
+  color: var(--accent);
+}
+
+/* ============ 历史版本 ============ */
+.version-list {
+  display: flex;
+  flex-direction: column;
+  max-width: 720px;
+}
+
+.version-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+
+.version-row.active {
+  border-color: var(--accent-soft);
+}
+
+.version-number {
+  font-family: Consolas, monospace;
+  color: var(--accent);
+  margin-right: 10px;
+}
+
+.version-note {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.version-actions {
+  display: flex;
+  gap: 8px;
+}

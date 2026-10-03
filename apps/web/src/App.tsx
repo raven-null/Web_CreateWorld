@@ -2,11 +2,15 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
 import DiscoverPage from "./pages/DiscoverPage";
+import EntryEditPage from "./pages/EntryEditPage";
+import EntryVersionsPage from "./pages/EntryVersionsPage";
+import EntryViewPage from "./pages/EntryViewPage";
 import LoginPage from "./pages/LoginPage";
 import MyWorldsPage from "./pages/MyWorldsPage";
 import NewWorldPage from "./pages/NewWorldPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import RegisterPage from "./pages/RegisterPage";
+import WorldEntriesPage from "./pages/WorldEntriesPage";
 import WorldPage from "./pages/WorldPage";
 
 /**
@@ -23,6 +27,10 @@ export default function App() {
           <Route path="worlds" element={<MyWorldsPage />} />
           <Route path="worlds/new" element={<NewWorldPage />} />
           <Route path="w/:worldId" element={<WorldPage />} />
+          <Route path="w/:worldId/entries" element={<WorldEntriesPage />} />
+          <Route path="w/:worldId/entries/:entryId" element={<EntryViewPage />} />
+          <Route path="w/:worldId/entries/:entryId/edit" element={<EntryEditPage />} />
+          <Route path="w/:worldId/entries/:entryId/versions" element={<EntryVersionsPage />} />
           <Route path="admin" element={<AdminPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

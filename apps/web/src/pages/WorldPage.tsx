@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { ROLE_LABELS, VISIBILITY_LABELS, type MemberRole, type WorldVisibility } from "@create-world/core";
 import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
@@ -108,8 +108,10 @@ export default function WorldPage() {
             </span>
           ))}
         </div>
-        <div className="notice" style={{ marginTop: 16 }}>
-          条目浏览与编辑功能正在开发中，下一步上线。
+        <div style={{ marginTop: 16 }}>
+          <Link to={`/w/${world.id}/entries`} className="btn">
+            进入条目
+          </Link>
         </div>
       </div>
 
