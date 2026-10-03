@@ -40,7 +40,15 @@ packages/
 
 ## 常用命令
 
-（脚手架搭建后补充：`pnpm dev` / `build` / `test` / `lint` / `typecheck` / `deploy`）
+- 安装依赖：`pnpm install`
+- 同时启动前后端：`pnpm dev`（服务端 8787 / 前端 5173）
+- 仅启动服务端：`pnpm dev:server`；仅启动前端：`pnpm dev:web`
+- 本地数据库迁移：`pnpm --filter @create-world/server db:migrate:local`
+- 创建 better-auth 认证表（首次启动后调用一次，本地的 MIGRATE_SECRET 见 `.dev.vars.example`）：
+  `POST http://localhost:8787/api/migrate`，请求头 `x-migrate-secret: <值>`
+- 全量类型检查：`pnpm typecheck`
+- 前端构建：`pnpm --filter @create-world/web build`
+- 部署服务端：`pnpm --filter @create-world/server deploy`（需先在 Cloudflare 创建 D1 并更新 wrangler.jsonc）
 
 ## 提交规范
 
