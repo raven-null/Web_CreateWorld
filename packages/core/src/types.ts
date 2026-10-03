@@ -138,3 +138,41 @@ export interface WorldMember {
   source: JoinSource;
   joinedAt: number;
 }
+
+/** 时间粒度：仅年 / 年到月 / 年月日 */
+export type TimeGranularity = "year" | "month" | "day";
+
+/** 时间数字展示风格：阿拉伯数字 / 中文数字 */
+export type TimeNumberStyle = "arabic" | "chinese";
+
+/** 世界纪元（如「第三纪元」） */
+export interface Era {
+  id: string;
+  worldId: string;
+  name: string;
+  /** 排序值，越小越早 */
+  sortOrder: number;
+}
+
+/** 时间线事件 */
+export interface TimelineEvent {
+  id: string;
+  worldId: string;
+  title: string;
+  description: string;
+  /** 所属纪元；时间未定或未选择时为 null */
+  eraId: string | null;
+  /** 年份（可为负表示「之前」） */
+  year: number | null;
+  month: number | null;
+  day: number | null;
+  /** 季节 / 季度标注（自由文本，如「春」） */
+  season: string;
+  /** 时间未定标记 */
+  timeUndetermined: boolean;
+  /** 关联条目 id */
+  entryId: string | null;
+  createdBy: string | null;
+  createdAt: number;
+  updatedAt: number;
+}

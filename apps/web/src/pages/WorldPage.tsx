@@ -134,6 +134,9 @@ export default function WorldPage() {
         <Link className="btn ghost" to={`/w/${world.id}/graph`}>
           关系图
         </Link>
+        <Link className="btn ghost" to={`/w/${world.id}/timeline`}>
+          时间线
+        </Link>
       </div>
 
       <div className="section">

@@ -59,6 +59,12 @@ export default function WorldSettingsPage() {
   // 分类管理
   const [newCategoryName, setNewCategoryName] = useState("");
 
+  // 时间系统
+  const [eras, setEras] = useState<Array<{ id: string; name: string }>>([]);
+  const [granularity, setGranularity] = useState<"year" | "month" | "day">("day");
+  const [numberStyle, setNumberStyle] = useState<"arabic" | "chinese">("arabic");
+  const [newEraName, setNewEraName] = useState("");
+
   // 邀请
   const [inviteRole, setInviteRole] = useState("editor");
   const [inviteCode, setInviteCode] = useState("");
@@ -74,12 +80,19 @@ export default function WorldSettingsPage() {
       setSelectedTags(detail.tags);
 
       if (detail.myRole === "owner" || detail.myRole === "admin") {
-        const [memberList, banList] = await Promise.all([
+        const [memberList, banList, timeline] = await Promise.all([
           api<MemberItem[]>(`/api/worlds/${worldId}/members`),
           api<BanItem[]>(`/api/worlds/${worldId}/bans`),
+          api<{
+            eras: Array<{ id: string; name: string }>;
+            timeConfig: { granularity: "year" | "month" | "day"; numberStyle: "arabic" | "chinese" };
+          }>(`/api/worlds/${worldId}/timeline`),
         ]);
         setMembers(memberList);
         setBans(banList);
+        setEras(timeline.eras);
+        setGranularity(timeline.timeConfig.granularity);
+        setNumberStyle(timeline.timeConfig.numberStyle);
       }
       setError("");
     } catch (err) {
@@ -167,6 +180,59 @@ export default function WorldSettingsPage() {
     }
     try {
       await api(`/api/categories/${categoryId}`, { method: "DELETE" });
+      await loadAll();
+    } catch (err) {
+      showToast("error", (err as Error).message);
+    }
+  };
+
+  /** 保存时间系统设置（时间粒度 / 数字风格） */
+  const handleSaveTimeSettings = async () => {
+    try {
+      await api(`/api/worlds/${worldId}/time-settings`, {
+        method: "PATCH",
+        body: { granularity, numberStyle },
+      });
+      showToast("success", "时间设置已保存");
+    } catch (err) {
+      showToast("error", (err as Error).message);
+    }
+  };
+
+  /** 新增纪元 */
+  const handleAddEra = async () => {
+    if (!newEraName.trim()) {
+      return;
+    }
+    try {
+      await api(`/api/worlds/${worldId}/eras`, { method: "POST", body: { name: newEraName.trim() } });
+      setNewEraName("");
+      await loadAll();
+    } catch (err) {
+      showToast("error", (err as Error).message);
+    }
+  };
+
+  /** 重命名纪元 */
+  const handleRenameEra = async (eraId: string, value: string) => {
+    if (!value.trim()) {
+      return;
+    }
+    try {
+      await api(`/api/eras/${eraId}`, { method: "PATCH", body: { name: value.trim() } });
+      await loadAll();
+    } catch (err) {
+      showToast("error", (err as Error).message);
+    }
+  };
+
+  /** 删除纪元 */
+  const handleDeleteEra = async (eraId: string, eraName: string) => {
+    if (!window.confirm(`确定删除纪元「${eraName}」？`)) {
+      return;
+    }
+    try {
+      await api(`/api/eras/${eraId}`, { method: "DELETE" });
       await loadAll();
     } catch (err) {
       showToast("error", (err as Error).message);
@@ -308,6 +374,57 @@ export default function WorldSettingsPage() {
                 className="btn ghost small"
                 onClick={() => void handleDeleteCategory(category.id, category.name)}
               >
+                删除
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="section">
+        <h2 className="section-title">时间系统</h2>
+        <div className="form" style={{ marginBottom: 18 }}>
+          <div className="field">
+            <label>时间粒度</label>
+            <select value={granularity} onChange={(changeEvent) => setGranularity(changeEvent.target.value as "year" | "month" | "day")}>
+              <option value="year">仅年份</option>
+              <option value="month">精确到月</option>
+              <option value="day">精确到日</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>数字风格</label>
+            <select value={numberStyle} onChange={(changeEvent) => setNumberStyle(changeEvent.target.value as "arabic" | "chinese")}>
+              <option value="arabic">阿拉伯数字（402 年）</option>
+              <option value="chinese">中文数字（四〇二年）</option>
+            </select>
+          </div>
+          <button type="button" className="btn" onClick={() => void handleSaveTimeSettings()}>
+            保存时间设置
+          </button>
+        </div>
+
+        <h3 style={{ fontSize: 15, color: "var(--text-dim)", margin: "0 0 10px" }}>纪元列表（从早到晚）</h3>
+        <div className="create-entry-form">
+          <input
+            value={newEraName}
+            onChange={(changeEvent) => setNewEraName(changeEvent.target.value)}
+            placeholder="新纪元名称，如「第三纪元」"
+          />
+          <button type="button" className="btn small" onClick={() => void handleAddEra()}>
+            添加纪元
+          </button>
+        </div>
+        {eras.length === 0 && <div className="empty">还没有纪元，添加后即可在时间线中编年</div>}
+        <div className="entry-list">
+          {eras.map((era) => (
+            <div key={era.id} className="entry-row">
+              <input
+                defaultValue={era.name}
+                onBlur={(changeEvent) => void handleRenameEra(era.id, changeEvent.target.value)}
+                style={{ background: "var(--bg-soft)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text)", padding: "5px 10px", width: 200, fontFamily: "inherit" }}
+              />
+              <button type="button" className="btn ghost small" onClick={() => void handleDeleteEra(era.id, era.name)}>
                 删除
               </button>
             </div>

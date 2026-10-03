@@ -850,3 +850,113 @@ a:hover {
   height: 100%;
   touch-action: none;
 }
+
+/* ============ 时间线 ============ */
+.timeline-era {
+  margin-top: 28px;
+}
+
+.timeline-era-title {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin: 0;
+}
+
+.timeline-track {
+  border-left: 2px solid var(--accent-soft);
+  margin-left: 8px;
+  padding-left: 20px;
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.timeline-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  position: relative;
+}
+
+.timeline-card::before {
+  content: "";
+  position: absolute;
+  left: -27px;
+  top: 18px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.timeline-card-time {
+  color: var(--accent);
+  font-size: 13px;
+  letter-spacing: 1px;
+}
+
+.timeline-card-title {
+  font-size: 16px;
+  margin-top: 4px;
+}
+
+.timeline-card-desc {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.timeline-card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.timeline-card-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.timeline-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+/* ============ 弹层 ============ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  padding: 20px;
+}
+
+.modal {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 24px;
+  width: 100%;
+  max-width: 520px;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+
+.form-row {
+  display: flex;
+  gap: 12px;
+}
+
+.form-row .field {
+  flex: 1;
+}

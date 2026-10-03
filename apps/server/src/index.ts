@@ -9,6 +9,7 @@ import entryRoutes from "./routes/entries";
 import meRoutes from "./routes/me";
 import migrateRoutes from "./routes/migrate";
 import registerRoutes from "./routes/register";
+import timelineRoutes from "./routes/timeline";
 import worldRoutes from "./routes/worlds";
 import type { Env } from "./types";
 
@@ -38,6 +39,7 @@ app.route("/api", discoverRoutes);
 app.route("/api", worldRoutes);
 app.route("/api", entryRoutes);
 app.route("/api", categoryRoutes);
+app.route("/api", timelineRoutes);
 app.route("/api/admin", adminRoutes);
 
 /** 健康检查与根路径提示 */
