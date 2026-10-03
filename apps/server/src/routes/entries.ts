@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { hasRoleLevel } from "@create-world/core";
 import { checkNewAccountQuota } from "../lib/quota";
 import { fail, ok } from "../lib/response";
+import { extractEntryLinksFromBlocks } from "../lib/tiptap-links";
 import { canEdit, canRead, loadWorldAccess, type WorldAccess } from "../lib/world-access";
 import { getUser, requireLogin, type AppVariables } from "../middleware/session";
 import type { Env } from "../types";
@@ -473,6 +474,9 @@ entryRoutes.post("/entries/:entryId/versions/:version/rollback", requireLogin, a
   const newVersion = entry.version + 1;
   const totalWords = blocks.reduce((sum, block) => sum + (Number(block.wordCount) || 0), 0);
 
+  // 从恢复的内容块中解析条目关联，重建 entry_links（与正文保持一致）
+  const restoredLinks = extractEntryLinksFromBlocks(blocks);
+
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM entry_blocks WHERE entry_id = ?").bind(entry.id),
     ...blocks.map((block, index) =>
@@ -480,6 +484,12 @@ entryRoutes.post("/entries/:entryId/versions/:version/rollback", requireLogin, a
         `INSERT INTO entry_blocks (id, entry_id, sort_order, title, content_json, word_count, version, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(crypto.randomUUID(), entry.id, index, block.title ?? "", block.contentJson, block.wordCount ?? 0, newVersion, now),
+    ),
+    c.env.DB.prepare("DELETE FROM entry_links WHERE from_entry_id = ?").bind(entry.id),
+    ...restoredLinks.map((link) =>
+      c.env.DB.prepare(
+        "INSERT INTO entry_links (id, from_entry_id, to_entry_id, to_title, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).bind(crypto.randomUUID(), entry.id, link.toEntryId, link.toTitle, now),
     ),
     c.env.DB.prepare(
       "UPDATE entries SET word_count = ?, version = ?, last_editor_id = ?, updated_at = ? WHERE id = ?",

@@ -12,6 +12,7 @@ import NotFoundPage from "./pages/NotFoundPage";
 import RegisterPage from "./pages/RegisterPage";
 import SettingsPage from "./pages/SettingsPage";
 import WorldEntriesPage from "./pages/WorldEntriesPage";
+import WorldGraphPage from "./pages/WorldGraphPage";
 import WorldPage from "./pages/WorldPage";
 import WorldSettingsPage from "./pages/WorldSettingsPage";
 
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="worlds/new" element={<NewWorldPage />} />
           <Route path="w/:worldId" element={<WorldPage />} />
           <Route path="w/:worldId/settings" element={<WorldSettingsPage />} />
+          <Route path="w/:worldId/graph" element={<WorldGraphPage />} />
           <Route path="w/:worldId/entries" element={<WorldEntriesPage />} />
           <Route path="w/:worldId/entries/:entryId" element={<EntryViewPage />} />
           <Route path="w/:worldId/entries/:entryId/edit" element={<EntryEditPage />} />

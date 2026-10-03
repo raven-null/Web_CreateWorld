@@ -305,6 +305,47 @@ worldRoutes.post("/worlds/:id/invites", requireLogin, async (c) => {
 });
 
 /**
+ * 世界关系图数据：条目为节点、条目关联为边。
+ * 节点最多 800 个；仅返回两端都在本世界内的边。
+ */
+worldRoutes.get("/worlds/:id/graph", async (c) => {
+  const userId = c.get("user")?.id ?? null;
+  const access = await loadWorldAccess(c.env.DB, c.req.param("id"), userId);
+  if (!access || !canRead(access)) {
+    return fail(c, "世界不存在或无权访问", 404);
+  }
+
+  const [nodeResult, edgeResult] = await Promise.all([
+    c.env.DB.prepare(
+      "SELECT id, title, category_id FROM entries WHERE world_id = ? ORDER BY updated_at DESC LIMIT 800",
+    )
+      .bind(access.world.id)
+      .all<{ id: string; title: string; category_id: string }>(),
+    c.env.DB.prepare(
+      `SELECT l.from_entry_id AS source, l.to_entry_id AS target
+       FROM entry_links l
+       JOIN entries e1 ON e1.id = l.from_entry_id AND e1.world_id = ?1
+       JOIN entries e2 ON e2.id = l.to_entry_id AND e2.world_id = ?1
+       GROUP BY l.from_entry_id, l.to_entry_id`,
+    )
+      .bind(access.world.id)
+      .all<{ source: string; target: string }>(),
+  ]);
+
+  return ok(c, {
+    nodes: (nodeResult.results ?? []).map((row) => ({
+      id: row.id,
+      title: row.title,
+      categoryId: row.category_id,
+    })),
+    links: (edgeResult.results ?? []).map((row) => ({
+      source: row.source,
+      target: row.target,
+    })),
+  });
+});
+
+/**
  * 加入开放编写世界：公开可编写世界的注册用户自动成为编辑。
  * 已有成员、被拉黑、非开放世界的情况分别处理。
  */

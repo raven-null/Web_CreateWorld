@@ -131,6 +131,9 @@ export default function WorldPage() {
             世界设置
           </Link>
         )}
+        <Link className="btn ghost" to={`/w/${world.id}/graph`}>
+          关系图
+        </Link>
       </div>
 
       <div className="section">
