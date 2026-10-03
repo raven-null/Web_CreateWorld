@@ -7,6 +7,7 @@
     "dev:server": "pnpm --filter @create-world/server dev",
     "dev:web": "pnpm --filter @create-world/web dev",
     "build": "pnpm -r build",
+    "deploy": "pnpm --filter @create-world/web build && pnpm --filter @create-world/server deploy",
     "typecheck": "pnpm -r typecheck"
   }
 }

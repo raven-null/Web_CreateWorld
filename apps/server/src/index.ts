@@ -6,7 +6,11 @@ import adminRoutes from "./routes/admin";
 import aiRoutes from "./routes/ai";
 import categoryRoutes from "./routes/categories";
 import discoverRoutes from "./routes/discover";
+import draftRoutes from "./routes/drafts";
 import entryRoutes from "./routes/entries";
+import exportRoutes from "./routes/export";
+import imageRoutes from "./routes/images";
+import mapRoutes from "./routes/maps";
 import meRoutes from "./routes/me";
 import migrateRoutes from "./routes/migrate";
 import registerRoutes from "./routes/register";
@@ -44,6 +48,10 @@ app.route("/api", categoryRoutes);
 app.route("/api", timelineRoutes);
 app.route("/api", reportRoutes);
 app.route("/api", aiRoutes);
+app.route("/api", imageRoutes);
+app.route("/api", mapRoutes);
+app.route("/api", draftRoutes);
+app.route("/api", exportRoutes);
 app.route("/api/admin", adminRoutes);
 
 /** 健康检查与根路径提示 */

@@ -2,6 +2,8 @@
 export interface Env {
   /** D1 数据库绑定 */
   DB: D1Database;
+  /** 图片存储（KV）绑定 */
+  IMAGES: KVNamespace;
   /** better-auth 会话加密密钥 */
   BETTER_AUTH_SECRET: string;
   /** 服务基础地址（本地 http://localhost:8787） */

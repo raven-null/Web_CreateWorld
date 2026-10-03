@@ -2,10 +2,12 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
 import DiscoverPage from "./pages/DiscoverPage";
+import DraftsPage from "./pages/DraftsPage";
 import EntryEditPage from "./pages/EntryEditPage";
 import EntryVersionsPage from "./pages/EntryVersionsPage";
 import EntryViewPage from "./pages/EntryViewPage";
 import LoginPage from "./pages/LoginPage";
+import MapsPage from "./pages/MapsPage";
 import MyWorldsPage from "./pages/MyWorldsPage";
 import NewWorldPage from "./pages/NewWorldPage";
 import NotFoundPage from "./pages/NotFoundPage";
@@ -30,10 +32,12 @@ export default function App() {
           <Route path="login" element={<LoginPage />} />
           <Route path="register" element={<RegisterPage />} />
           <Route path="worlds" element={<MyWorldsPage />} />
+          <Route path="drafts" element={<DraftsPage />} />
           <Route path="worlds/new" element={<NewWorldPage />} />
           <Route path="w/:worldId" element={<WorldPage />} />
           <Route path="w/:worldId/settings" element={<WorldSettingsPage />} />
           <Route path="w/:worldId/graph" element={<WorldGraphPage />} />
+          <Route path="w/:worldId/maps" element={<MapsPage />} />
           <Route path="w/:worldId/timeline" element={<WorldTimelinePage />} />
           <Route path="w/:worldId/search" element={<SearchPage />} />
           <Route path="w/:worldId/entries" element={<WorldEntriesPage />} />

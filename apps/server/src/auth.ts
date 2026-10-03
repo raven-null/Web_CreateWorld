@@ -41,8 +41,8 @@ export const auth = betterAuth({
       usernameValidator: (value) => USERNAME_PATTERN.test(value),
     }),
   ],
-  // 本地开发时 Vite 前端地址（生产与 API 同源，无需配置）
-  trustedOrigins: ["http://localhost:5173"],
+  // 可信来源：本地 Vite 开发地址 + 服务自身地址（生产同源，直接取 BETTER_AUTH_URL）
+  trustedOrigins: ["http://localhost:5173", bindings.BETTER_AUTH_URL],
   hooks: {
     before: async (ctx) => {
       // 根级 hooks 的输入上下文类型未声明 path/body，运行时存在，这里做类型收窄

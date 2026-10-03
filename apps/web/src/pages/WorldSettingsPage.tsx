@@ -433,6 +433,21 @@ export default function WorldSettingsPage() {
       </div>
 
       <div className="section">
+        <h2 className="section-title">内容导出</h2>
+        <p style={{ color: "var(--text-faint)", fontSize: 13, marginTop: 0 }}>
+          JSON 为完整备份（含内容块与元数据）；Markdown 为 zip 包（条目文件 + 双向链接 + 时间线 + 地图标记）。
+        </p>
+        <div style={{ display: "flex", gap: 10 }}>
+          <a className="btn ghost" href={`/api/worlds/${worldId}/export/json`} download>
+            导出 JSON（备份）
+          </a>
+          <a className="btn ghost" href={`/api/worlds/${worldId}/export/markdown`} download>
+            导出 Markdown（zip）
+          </a>
+        </div>
+      </div>
+
+      <div className="section">
         <h2 className="section-title">成员管理（{members.length}）</h2>
         <table className="table">
           <thead>

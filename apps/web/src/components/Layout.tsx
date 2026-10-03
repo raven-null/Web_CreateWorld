@@ -30,6 +30,7 @@ export default function Layout() {
             发现
           </NavLink>
           {user && <NavLink to="/worlds">我的世界</NavLink>}
+          {user && <NavLink to="/drafts">草稿箱</NavLink>}
           {isAdmin && <NavLink to="/admin">管理后台</NavLink>}
         </nav>
         <div className="site-user">

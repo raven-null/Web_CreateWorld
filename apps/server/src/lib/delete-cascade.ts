@@ -27,6 +27,9 @@ export async function deleteWorldCascade(db: D1Database, worldId: string): Promi
     db.prepare("DELETE FROM invite_codes WHERE world_id = ?").bind(worldId),
     db.prepare("DELETE FROM eras WHERE world_id = ?").bind(worldId),
     db.prepare("DELETE FROM timeline_events WHERE world_id = ?").bind(worldId),
+    db.prepare("DELETE FROM markers WHERE map_id IN (SELECT id FROM maps WHERE world_id = ?)").bind(worldId),
+    db.prepare("DELETE FROM maps WHERE world_id = ?").bind(worldId),
+    db.prepare("UPDATE drafts SET world_id = NULL WHERE world_id = ?").bind(worldId),
     db.prepare("DELETE FROM worlds WHERE id = ?").bind(worldId),
   ]);
 }

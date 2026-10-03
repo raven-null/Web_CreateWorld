@@ -1042,3 +1042,84 @@ mark {
   font-size: 14px;
   resize: vertical;
 }
+
+/* ============ 地图 ============ */
+.map-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.map-view {
+  height: calc(100vh - 300px);
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-card);
+}
+
+.map-view .leaflet-container {
+  background: var(--bg-card);
+  font-family: inherit;
+}
+
+.map-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #222;
+  min-width: 120px;
+}
+
+.map-popup-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ============ 草稿箱 ============ */
+.draft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 760px;
+}
+
+.draft-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.draft-card textarea {
+  width: 100%;
+  min-height: 72px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.7;
+  resize: vertical;
+  outline: none;
+}
+
+.draft-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--text-faint);
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.draft-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
