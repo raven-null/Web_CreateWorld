@@ -57,6 +57,14 @@ async function requestApi<T>(path: string, options: { method?: string; body?: un
 }
 
 /**
+ * 手动清空 GET 缓存。
+ * 供未走 api() 的写操作（如 multipart 导入 / 上传）在完成后调用。
+ */
+export function clearApiCache(): void {
+  getCache.clear();
+}
+
+/**
  * 调用后端 JSON API。
  * 特性：GET 请求有 10 秒短缓存与并发合并（页面来回切换秒开）；任何写操作立即清空缓存。
  * @param path 接口路径，如 /api/discover

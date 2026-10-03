@@ -83,6 +83,9 @@ async function collectWorldData(db: D1Database, worldId: string) {
   }
 
   return {
+    // 导入功能依赖的格式标识与版本（勿随意修改，见 docs/方案.md 12.2）
+    format: "create-world-export",
+    version: 1,
     exportedAt: new Date().toISOString(),
     world: {
       id: world?.id,
