@@ -47,3 +47,34 @@ export function extractEntryLinksFromBlocks(
   }
   return links;
 }
+
+/**
+ * 从单个内容块 JSON 中提取纯文本（各文本节点拼接，段落用换行分隔）。
+ * 用于全文搜索与摘要展示。
+ * @param contentJson 内容块 JSON 字符串
+ * @returns 纯文本
+ */
+export function extractBlockText(contentJson: string): string {
+  const chunks: string[] = [];
+
+  /** 深度遍历节点树，收集文本 */
+  const visit = (node: TipTapNode) => {
+    if (typeof node.text === "string") {
+      chunks.push(node.text);
+    }
+    if (node.content && node.content.length > 0) {
+      for (const child of node.content) {
+        visit(child);
+      }
+      // 块级节点之间补换行，便于摘要展示
+      chunks.push("\n");
+    }
+  };
+
+  try {
+    visit(JSON.parse(contentJson) as TipTapNode);
+  } catch {
+    return "";
+  }
+  return chunks.join("").trim();
+}

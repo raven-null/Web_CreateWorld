@@ -4,6 +4,7 @@ import { ROLE_LABELS, VISIBILITY_LABELS, type MemberRole, type WorldVisibility }
 import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
 import { showToast } from "../lib/toast";
+import ReportDialog from "../components/ReportDialog";
 
 /** 世界详情接口返回结构 */
 interface WorldDetail {
@@ -35,6 +36,7 @@ export default function WorldPage() {
   const [loading, setLoading] = useState(true);
   const [inviteRole, setInviteRole] = useState("editor");
   const [inviteCode, setInviteCode] = useState("");
+  const [reportOpen, setReportOpen] = useState(false);
 
   // 世界 id 或登录状态变化时刷新详情
   useEffect(() => {
@@ -137,7 +139,19 @@ export default function WorldPage() {
         <Link className="btn ghost" to={`/w/${world.id}/timeline`}>
           时间线
         </Link>
+        <Link className="btn ghost" to={`/w/${world.id}/search`}>
+          搜索
+        </Link>
+        {session && world.myRole === null && (
+          <button type="button" className="btn ghost" onClick={() => setReportOpen(true)}>
+            举报
+          </button>
+        )}
       </div>
+
+      {reportOpen && (
+        <ReportDialog targetType="world" targetId={world.id} targetName={world.name} onClose={() => setReportOpen(false)} />
+      )}
 
       <div className="section">
         <h2 className="section-title">分类</h2>

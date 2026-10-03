@@ -960,3 +960,85 @@ a:hover {
 .form-row .field {
   flex: 1;
 }
+
+/* ============ 全文搜索 ============ */
+.search-form {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.search-form input {
+  flex: 1;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.search-form select {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 12px;
+  font-family: inherit;
+}
+
+.search-results {
+  display: flex;
+  flex-direction: column;
+}
+
+.search-result {
+  display: block;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.search-result:hover {
+  background: var(--bg-soft);
+  text-decoration: none;
+}
+
+.search-result-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.search-cat {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.search-snippet {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+mark {
+  background: rgba(201, 161, 92, 0.35);
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* ============ AI 面板 ============ */
+.ai-panel textarea {
+  width: 100%;
+  min-height: 140px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 10px;
+  font-family: inherit;
+  font-size: 14px;
+  resize: vertical;
+}

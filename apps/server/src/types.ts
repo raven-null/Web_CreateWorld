@@ -12,4 +12,6 @@ export interface Env {
   BOOTSTRAP_INVITE_CODE?: string;
   /** 数据库迁移接口密钥 */
   MIGRATE_SECRET?: string;
+  /** AI API Key 加密密钥（用于用户密钥的加密存储） */
+  AI_KEY_SECRET?: string;
 }

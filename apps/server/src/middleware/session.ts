@@ -30,6 +30,13 @@ export const sessionMiddleware = createMiddleware<{
     // 数据库尚未迁移等异常时按「未登录」处理，避免公开接口整体不可用
     console.error("会话解析失败：", error);
   }
+
+  // 被禁用 / 封禁的账号按未登录处理（登录入口另有状态提示）
+  const status = session ? (session.user as { status?: string }).status : undefined;
+  if (session && status && status !== "active") {
+    session = null;
+  }
+
   c.set("session", session);
   c.set("user", session?.user ?? null);
   await next();

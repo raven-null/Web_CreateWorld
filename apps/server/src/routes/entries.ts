@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { hasRoleLevel } from "@create-world/core";
+import { deleteEntryCascade } from "../lib/delete-cascade";
 import { checkNewAccountQuota } from "../lib/quota";
 import { fail, ok } from "../lib/response";
-import { extractEntryLinksFromBlocks } from "../lib/tiptap-links";
+import { extractBlockText, extractEntryLinksFromBlocks } from "../lib/tiptap-links";
 import { canEdit, canRead, loadWorldAccess, type WorldAccess } from "../lib/world-access";
 import { getUser, requireLogin, type AppVariables } from "../middleware/session";
 import type { Env } from "../types";
@@ -340,9 +341,19 @@ entryRoutes.put("/entries/:entryId/blocks", requireLogin, async (c) => {
     c.env.DB.prepare("DELETE FROM entry_blocks WHERE entry_id = ?").bind(entry.id),
     ...normalizedBlocks.map((block, index) =>
       c.env.DB.prepare(
-        `INSERT INTO entry_blocks (id, entry_id, sort_order, title, content_json, word_count, version, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(crypto.randomUUID(), entry.id, index, block.title, block.contentJson, block.wordCount, newVersion, now),
+        `INSERT INTO entry_blocks (id, entry_id, sort_order, title, content_json, text_content, word_count, version, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        entry.id,
+        index,
+        block.title,
+        block.contentJson,
+        extractBlockText(block.contentJson),
+        block.wordCount,
+        newVersion,
+        now,
+      ),
     ),
     c.env.DB.prepare("DELETE FROM entry_links WHERE from_entry_id = ?").bind(entry.id),
     ...normalizedLinks.map((link) =>
@@ -481,9 +492,19 @@ entryRoutes.post("/entries/:entryId/versions/:version/rollback", requireLogin, a
     c.env.DB.prepare("DELETE FROM entry_blocks WHERE entry_id = ?").bind(entry.id),
     ...blocks.map((block, index) =>
       c.env.DB.prepare(
-        `INSERT INTO entry_blocks (id, entry_id, sort_order, title, content_json, word_count, version, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(crypto.randomUUID(), entry.id, index, block.title ?? "", block.contentJson, block.wordCount ?? 0, newVersion, now),
+        `INSERT INTO entry_blocks (id, entry_id, sort_order, title, content_json, text_content, word_count, version, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        entry.id,
+        index,
+        block.title ?? "",
+        block.contentJson,
+        extractBlockText(block.contentJson),
+        block.wordCount ?? 0,
+        newVersion,
+        now,
+      ),
     ),
     c.env.DB.prepare("DELETE FROM entry_links WHERE from_entry_id = ?").bind(entry.id),
     ...restoredLinks.map((link) =>
@@ -543,16 +564,82 @@ entryRoutes.delete("/entries/:entryId", requireLogin, async (c) => {
     return fail(c, "删除条目需要世界管理员权限", 403);
   }
 
-  await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM entry_blocks WHERE entry_id = ?").bind(entry.id),
-    c.env.DB.prepare("DELETE FROM entry_links WHERE from_entry_id = ?").bind(entry.id),
-    c.env.DB.prepare("UPDATE entry_links SET to_entry_id = NULL WHERE to_entry_id = ?").bind(entry.id),
-    c.env.DB.prepare("DELETE FROM entry_versions WHERE entry_id = ?").bind(entry.id),
-    c.env.DB.prepare("DELETE FROM entries WHERE id = ?").bind(entry.id),
-    c.env.DB.prepare("UPDATE worlds SET updated_at = ? WHERE id = ?").bind(Date.now(), entry.world_id),
-  ]);
+  await deleteEntryCascade(c.env.DB, entry.id);
+  await c.env.DB.prepare("UPDATE worlds SET updated_at = ? WHERE id = ?").bind(Date.now(), entry.world_id).run();
 
   return ok(c, { deleted: true });
+});
+
+/**
+ * 生成命中片段：命中词两侧各截取 30 字。
+ * @param text 被搜索的文本
+ * @param keyword 搜索词
+ * @returns 摘要片段
+ */
+function buildSnippet(text: string, keyword: string): string {
+  const index = text.toLowerCase().indexOf(keyword.toLowerCase());
+  if (index < 0) {
+    return text.slice(0, 60);
+  }
+  const start = Math.max(0, index - 30);
+  const end = Math.min(text.length, index + keyword.length + 30);
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
+}
+
+/**
+ * 全文搜索：标题 + 正文纯文本，支持分类筛选（需要查看权限）。
+ * query: q（必填）、categoryId（可选）
+ */
+entryRoutes.get("/worlds/:worldId/search", async (c) => {
+  const userId = c.get("user")?.id ?? null;
+  const access = await loadWorldAccess(c.env.DB, c.req.param("worldId"), userId);
+  if (!access || !canRead(access)) {
+    return fail(c, "世界不存在或无权访问", 404);
+  }
+
+  const keyword = c.req.query("q")?.trim() ?? "";
+  if (!keyword) {
+    return fail(c, "请输入搜索关键词");
+  }
+  const categoryId = c.req.query("categoryId")?.trim() || null;
+
+  // 转义 LIKE 通配符，避免用户输入 % / _ 影响匹配
+  const escaped = keyword.replace(/[\\%_]/g, (char) => `\\${char}`);
+
+  const result = await c.env.DB.prepare(
+    `SELECT e.id, e.title, e.category_id, e.updated_at,
+            (SELECT b.text_content FROM entry_blocks b
+             WHERE b.entry_id = e.id AND b.text_content LIKE '%' || ?1 || '%' ESCAPE '\\'
+             LIMIT 1) AS matched_text
+     FROM entries e
+     WHERE e.world_id = ?2
+       AND (?3 IS NULL OR e.category_id = ?3)
+       AND (
+         e.title LIKE '%' || ?1 || '%' ESCAPE '\\'
+         OR EXISTS (SELECT 1 FROM entry_blocks b2 WHERE b2.entry_id = e.id AND b2.text_content LIKE '%' || ?1 || '%' ESCAPE '\\')
+       )
+     ORDER BY e.updated_at DESC
+     LIMIT 50`,
+  )
+    .bind(escaped, access.world.id, categoryId)
+    .all<Record<string, unknown>>();
+
+  return ok(
+    c,
+    (result.results ?? []).map((row) => {
+      const title = row.title as string;
+      const matchedText = (row.matched_text as string | null) ?? "";
+      const titleHit = title.toLowerCase().includes(keyword.toLowerCase());
+      return {
+        id: row.id as string,
+        title,
+        categoryId: row.category_id as string,
+        updatedAt: row.updated_at as number,
+        snippet: buildSnippet(titleHit ? title : matchedText || title, keyword),
+        matchedIn: titleHit ? "title" : "content",
+      };
+    }),
+  );
 });
 
 export default entryRoutes;

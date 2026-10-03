@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { DEFAULT_CATEGORIES, hasRoleLevel, type MemberRole, type WorldVisibility } from "@create-world/core";
+import { deleteWorldCascade } from "../lib/delete-cascade";
 import { fail, ok } from "../lib/response";
 import { canEdit, canRead, loadWorldAccess } from "../lib/world-access";
 import { getUser, requireLogin, type AppVariables } from "../middleware/session";
@@ -529,22 +530,7 @@ worldRoutes.delete("/worlds/:id", requireLogin, async (c) => {
     return fail(c, "只有创建者可以删除世界", 403);
   }
 
-  const worldId = access.world.id;
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      "UPDATE entry_links SET to_entry_id = NULL WHERE to_entry_id IN (SELECT id FROM entries WHERE world_id = ?)",
-    ).bind(worldId),
-    c.env.DB.prepare("DELETE FROM entry_blocks WHERE entry_id IN (SELECT id FROM entries WHERE world_id = ?)").bind(worldId),
-    c.env.DB.prepare("DELETE FROM entry_links WHERE from_entry_id IN (SELECT id FROM entries WHERE world_id = ?)").bind(worldId),
-    c.env.DB.prepare("DELETE FROM entry_versions WHERE entry_id IN (SELECT id FROM entries WHERE world_id = ?)").bind(worldId),
-    c.env.DB.prepare("DELETE FROM entries WHERE world_id = ?").bind(worldId),
-    c.env.DB.prepare("DELETE FROM categories WHERE world_id = ?").bind(worldId),
-    c.env.DB.prepare("DELETE FROM world_tags WHERE world_id = ?").bind(worldId),
-    c.env.DB.prepare("DELETE FROM world_members WHERE world_id = ?").bind(worldId),
-    c.env.DB.prepare("DELETE FROM world_bans WHERE world_id = ?").bind(worldId),
-    c.env.DB.prepare("DELETE FROM invite_codes WHERE world_id = ?").bind(worldId),
-    c.env.DB.prepare("DELETE FROM worlds WHERE id = ?").bind(worldId),
-  ]);
+  await deleteWorldCascade(c.env.DB, access.world.id);
   return ok(c, { deleted: true });
 });
 

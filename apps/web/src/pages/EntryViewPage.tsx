@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ROLE_LABELS, type MemberRole } from "@create-world/core";
 import { api } from "../lib/api";
+import { authClient } from "../lib/auth-client";
 import { showToast } from "../lib/toast";
+import ReportDialog from "../components/ReportDialog";
 import TipTapRenderer from "../components/TipTapRenderer";
 import { parseDoc, type TipTapDoc } from "../lib/tiptap-json";
 
@@ -32,6 +34,8 @@ export default function EntryViewPage() {
   const navigate = useNavigate();
   const [detail, setDetail] = useState<EntryDetail | null>(null);
   const [error, setError] = useState("");
+  const [reportOpen, setReportOpen] = useState(false);
+  const { data: session } = authClient.useSession();
 
   // 加载条目详情（从编辑页返回时重新拉取最新版本）
   useEffect(() => {
@@ -120,8 +124,17 @@ export default function EntryViewPage() {
               删除
             </button>
           )}
+          {session && (
+            <button type="button" className="btn ghost" onClick={() => setReportOpen(true)}>
+              举报
+            </button>
+          )}
         </div>
       </div>
+
+      {reportOpen && (
+        <ReportDialog targetType="entry" targetId={entryId} targetName={detail.title} onClose={() => setReportOpen(false)} />
+      )}
 
       <article className="entry-body">
         <TipTapRenderer

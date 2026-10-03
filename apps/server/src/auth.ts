@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
 import { username } from "better-auth/plugins";
 import { env } from "cloudflare:workers";
 import { PASSWORD_MIN_LENGTH, USERNAME_PATTERN } from "@create-world/core";
@@ -42,6 +43,27 @@ export const auth = betterAuth({
   ],
   // 本地开发时 Vite 前端地址（生产与 API 同源，无需配置）
   trustedOrigins: ["http://localhost:5173"],
+  hooks: {
+    before: async (ctx) => {
+      // 根级 hooks 的输入上下文类型未声明 path/body，运行时存在，这里做类型收窄
+      const input = ctx as unknown as { path?: string; body?: { username?: string } };
+      // 登录前检查账号状态：被禁用 / 封禁的账号给出明确提示
+      if (input.path === "/sign-in/username") {
+        const username = (input.body?.username ?? "").trim().toLowerCase();
+        if (!username) {
+          return;
+        }
+        const row = await bindings.DB.prepare("SELECT status FROM user WHERE username = ?")
+          .bind(username)
+          .first<{ status: string }>();
+        if (row && row.status !== "active") {
+          throw new APIError("FORBIDDEN", {
+            message: row.status === "banned" ? "账号已被封禁" : "账号已被禁用，请联系管理员",
+          });
+        }
+      }
+    },
+  },
 });
 
 /**

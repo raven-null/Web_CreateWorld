@@ -10,6 +10,7 @@ import MyWorldsPage from "./pages/MyWorldsPage";
 import NewWorldPage from "./pages/NewWorldPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import RegisterPage from "./pages/RegisterPage";
+import SearchPage from "./pages/SearchPage";
 import SettingsPage from "./pages/SettingsPage";
 import WorldEntriesPage from "./pages/WorldEntriesPage";
 import WorldGraphPage from "./pages/WorldGraphPage";
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="w/:worldId/settings" element={<WorldSettingsPage />} />
           <Route path="w/:worldId/graph" element={<WorldGraphPage />} />
           <Route path="w/:worldId/timeline" element={<WorldTimelinePage />} />
+          <Route path="w/:worldId/search" element={<SearchPage />} />
           <Route path="w/:worldId/entries" element={<WorldEntriesPage />} />
           <Route path="w/:worldId/entries/:entryId" element={<EntryViewPage />} />
           <Route path="w/:worldId/entries/:entryId/edit" element={<EntryEditPage />} />

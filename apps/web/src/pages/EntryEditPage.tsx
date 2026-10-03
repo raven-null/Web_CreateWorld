@@ -43,6 +43,15 @@ const AUTOSAVE_MAX_INTERVAL_MS = 30_000;
 /** 本地草稿写入节流时间 */
 const DRAFT_WRITE_DEBOUNCE_MS = 800;
 
+/** AI 生成类型选项 */
+const AI_KINDS = [
+  { id: "character", label: "人物草案" },
+  { id: "location", label: "地点草案" },
+  { id: "faction", label: "势力草案" },
+  { id: "plot", label: "剧情草案" },
+  { id: "expand", label: "扩写选中文字" },
+];
+
 /** 空文档 */
 const EMPTY_DOC: TipTapDoc = { type: "doc", content: [] };
 
@@ -60,6 +69,13 @@ export default function EntryEditPage() {
   const [linkPanelOpen, setLinkPanelOpen] = useState(false);
   const [linkKeyword, setLinkKeyword] = useState("");
   const [linkCandidates, setLinkCandidates] = useState<Array<{ id: string; title: string }>>([]);
+
+  // AI 助手面板
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiKind, setAiKind] = useState("character");
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiResult, setAiResult] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
 
   // 用 ref 保存即时值，避免闭包拿到旧状态
   const versionRef = useRef(1);
@@ -275,6 +291,48 @@ export default function EntryEditPage() {
     setLinkKeyword("");
   };
 
+  /** 调用 AI 生成内容（结果仅作草稿，需用户手动插入） */
+  const generateAi = async () => {
+    if (!editor) {
+      return;
+    }
+    const { from, to } = editor.state.selection;
+    const selectedText = aiKind === "expand" ? editor.state.doc.textBetween(from, to, "\n") : "";
+    if (aiKind === "expand" && !selectedText.trim()) {
+      showToast("warning", "请先选中要扩写的文字");
+      return;
+    }
+    setAiLoading(true);
+    setAiResult("");
+    try {
+      const data = await api<{ text: string }>("/api/ai/generate", {
+        method: "POST",
+        body: { worldId, entryId, kind: aiKind, instruction: aiInstruction, text: selectedText },
+      });
+      setAiResult(data.text);
+    } catch (err) {
+      showToast("error", (err as Error).message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  /** 把 AI 结果按行插入到光标位置（每行一个段落） */
+  const insertAiResult = () => {
+    if (!editor || !aiResult.trim()) {
+      return;
+    }
+    const paragraphs = aiResult
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => ({ type: "paragraph", content: [{ type: "text", text: line }] }));
+    editor.chain().focus().insertContent(paragraphs).run();
+    showToast("success", "已插入正文，记得检查后再保存");
+    setAiOpen(false);
+    setAiResult("");
+  };
+
   /** 冲突处理：以本地修改为准，用最新版本号重试保存 */
   const handleKeepMine = async () => {
     if (conflictVersion !== null) {
@@ -413,6 +471,10 @@ export default function EntryEditPage() {
           取消关联
         </button>
         <span className="toolbar-divider" />
+        <button type="button" onClick={() => setAiOpen((value) => !value)}>
+          AI 助手
+        </button>
+        <span className="toolbar-divider" />
         <button type="button" onClick={() => editor?.chain().focus().undo().run()}>
           撤销
         </button>
@@ -441,6 +503,43 @@ export default function EntryEditPage() {
                 {item.title}
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {aiOpen && (
+        <div className="link-panel ai-panel">
+          <div className="link-panel-head">
+            <select value={aiKind} onChange={(event) => setAiKind(event.target.value)}>
+              {AI_KINDS.map((kind) => (
+                <option key={kind.id} value={kind.id}>
+                  {kind.label}
+                </option>
+              ))}
+            </select>
+            <input
+              value={aiInstruction}
+              onChange={(event) => setAiInstruction(event.target.value)}
+              placeholder="补充要求（可选），如：性格要偏执"
+            />
+            <button type="button" className="btn small" disabled={aiLoading} onClick={() => void generateAi()}>
+              {aiLoading ? "生成中…" : "生成"}
+            </button>
+            <button type="button" className="btn ghost small" onClick={() => setAiOpen(false)}>
+              关闭
+            </button>
+          </div>
+          <div style={{ padding: 10 }}>
+            <textarea
+              value={aiResult}
+              onChange={(event) => setAiResult(event.target.value)}
+              placeholder="AI 生成结果会显示在这里，可先编辑，再插入正文"
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button type="button" className="btn small" disabled={!aiResult.trim()} onClick={insertAiResult}>
+                插入到光标位置
+              </button>
+            </div>
           </div>
         </div>
       )}

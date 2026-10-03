@@ -132,6 +132,9 @@ export default function WorldEntriesPage() {
               新建条目
             </button>
           )}
+          <Link to={`/w/${worldId}/search`} className="btn ghost">
+            全文搜索
+          </Link>
         </div>
 
         {error && <div className="notice error">{error}</div>}
