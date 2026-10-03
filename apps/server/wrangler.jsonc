@@ -7,22 +7,19 @@
     {
       "binding": "DB",
       "database_name": "create-world-db",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "93086a82-28e0-4559-bd2e-f49d8eaeac7c",
       "migrations_dir": "migrations"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "IMAGES",
-      "id": "00000000000000000000000000000000"
+      "id": "2e4fca38f4af4b019c3a6334c1236c27"
     }
   ],
   "assets": {
     "directory": "../web/dist",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
-  },
-  "vars": {
-    "BETTER_AUTH_URL": "http://localhost:8787"
   }
 }

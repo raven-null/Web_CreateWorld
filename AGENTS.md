@@ -48,7 +48,16 @@ packages/
   `POST http://localhost:8787/api/migrate`，请求头 `x-migrate-secret: <值>`
 - 全量类型检查：`pnpm typecheck`
 - 前端构建：`pnpm --filter @create-world/web build`
-- 部署服务端：`pnpm --filter @create-world/server deploy`（需先在 Cloudflare 创建 D1 并更新 wrangler.jsonc）
+- 部署（构建前端 + 发布 Worker）：`pnpm deploy`
+- 远程数据库迁移：`pnpm --filter @create-world/server db:migrate:remote`
+
+## 生产环境
+
+- 地址：https://create-world.wyz15728790233.workers.dev
+- 架构：单个 Worker 同时提供 API 与前端静态资源（同域）；数据在 D1，图片在 KV
+- 生产密钥（BETTER_AUTH_SECRET / MIGRATE_SECRET / AI_KEY_SECRET / ADMIN_USERNAMES / BOOTSTRAP_INVITE_CODE / BETTER_AUTH_URL）
+  通过 `wrangler secret bulk` 管理，不写入仓库
+- 修改代码后执行 `pnpm deploy` 即发布；数据库结构变更先本地加迁移文件，再执行远程迁移命令
 
 ## 提交规范
 
