@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { authClient } from "../lib/auth-client";
 import { readUserRole } from "../lib/format";
 import ToastHost from "./ToastHost";
@@ -7,14 +7,18 @@ import ToastHost from "./ToastHost";
 /**
  * 全站布局：顶部导航 + 页面内容。
  * 桌面显示横向导航；移动端收纳为汉堡菜单。
- * 导航显示登录状态；站点管理员额外显示「管理后台」入口。
+ * 世界区（/w/*）使用宽版容器（侧边栏贴边），其余页面居中限宽。
  */
 export default function Layout() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { data: session } = authClient.useSession();
   const user = session?.user ?? null;
   const isAdmin = readUserRole(user) === "admin";
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // 世界区页面去掉居中限宽，让侧边栏贴住屏幕左缘
+  const isWorldRoute = location.pathname.startsWith("/w/");
 
   /** 关闭移动端菜单（点击任意导航项后） */
   const closeMenu = () => setMenuOpen(false);
@@ -84,7 +88,7 @@ export default function Layout() {
           {menuOpen ? "✕" : "☰"}
         </button>
       </header>
-      <main className="page">
+      <main className={`page${isWorldRoute ? " page-wide" : ""}`}>
         <Outlet />
       </main>
       <ToastHost />

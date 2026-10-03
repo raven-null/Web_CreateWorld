@@ -1392,17 +1392,28 @@ mark {
   }
 }
 
-/* ============ 世界区布局（侧边栏导航） ============ */
+/* ============ 世界区布局（贴边侧边栏） ============ */
+.page-wide {
+  max-width: none;
+  padding: 0;
+}
+
 .world-layout {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 26px;
-  align-items: start;
+  grid-template-columns: 236px minmax(0, 1fr);
+  align-items: stretch;
+  min-height: calc(100vh - 58px);
 }
 
 .world-sidebar {
   position: sticky;
-  top: 76px;
+  top: 58px;
+  align-self: start;
+  height: calc(100vh - 58px);
+  overflow-y: auto;
+  background: var(--bg-soft);
+  border-right: 1px solid var(--border);
+  padding: 22px 18px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -1430,14 +1441,14 @@ mark {
 
 .world-sidebar-nav a {
   display: block;
-  padding: 8px 12px;
+  padding: 9px 12px;
   border-radius: var(--radius);
   color: var(--text-dim);
   font-size: 14px;
 }
 
 .world-sidebar-nav a:hover {
-  background: var(--bg-soft);
+  background: var(--bg-card);
   color: var(--text);
   text-decoration: none;
 }
@@ -1448,7 +1459,16 @@ mark {
 }
 
 .world-content {
+  padding: 26px 34px 64px;
+  max-width: 1120px;
   min-width: 0;
+}
+
+/* 条目编辑页（无侧边栏）：宽版页面下保持内边距 */
+.page-wide .editor-page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
 }
 
 /* 世界内条目页：压缩分类栏，避免与侧边栏叠加过宽 */
@@ -1457,6 +1477,14 @@ mark {
 }
 
 @media (max-width: 1024px) {
+  .world-layout {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+
+  .world-content {
+    padding: 22px 22px 56px;
+  }
+
   .world-content .entries-layout {
     grid-template-columns: 140px minmax(0, 1fr);
   }
@@ -1465,14 +1493,18 @@ mark {
 @media (max-width: 768px) {
   .world-layout {
     grid-template-columns: 1fr;
-    gap: 12px;
+    min-height: 0;
   }
 
   .world-sidebar {
     position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
+    padding: 12px 14px;
     gap: 8px;
   }
 
@@ -1497,6 +1529,14 @@ mark {
     border-radius: 999px;
     padding: 8px 14px;
     min-height: 40px;
+  }
+
+  .world-content {
+    padding: 14px 14px 40px;
+  }
+
+  .page-wide .editor-page {
+    padding: 14px 14px 48px;
   }
 
   .world-content .entries-layout {

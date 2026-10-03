@@ -6,8 +6,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "create-world-db",
-      "database_id": "93086a82-28e0-4559-bd2e-f49d8eaeac7c",
+      "database_name": "create-world-db-apac",
+      "database_id": "ab944cf3-4796-4769-854b-103cb10f55a8",
       "migrations_dir": "migrations"
     }
   ],

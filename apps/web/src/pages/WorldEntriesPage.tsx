@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { formatTime } from "../lib/format";
@@ -52,27 +52,43 @@ export default function WorldEntriesPage() {
       .catch((err: Error) => setError(err.message));
   }, [worldId]);
 
-  // 加载条目列表：分类或搜索词变化时重新拉取（搜索防抖 300ms）
+  /** 按当前分类与搜索词拉取条目列表 */
+  const fetchEntries = async () => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (categoryId) {
+      params.set("categoryId", categoryId);
+    }
+    if (keyword.trim()) {
+      params.set("q", keyword.trim());
+    }
+    try {
+      setEntries(await api<EntryItem[]>(`/api/worlds/${worldId}/entries?${params.toString()}`));
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 分类 / 世界变化：立即加载（不等防抖，切页更快）
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setLoading(true);
-      const params = new URLSearchParams();
-      if (categoryId) {
-        params.set("categoryId", categoryId);
-      }
-      if (keyword.trim()) {
-        params.set("q", keyword.trim());
-      }
-      api<EntryItem[]>(`/api/worlds/${worldId}/entries?${params.toString()}`)
-        .then((data) => {
-          setEntries(data);
-          setError("");
-        })
-        .catch((err: Error) => setError(err.message))
-        .finally(() => setLoading(false));
-    }, 300);
+    void fetchEntries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [worldId, categoryId]);
+
+  // 搜索词变化：防抖 300ms（跳过首次，避免与上面的加载重复）
+  const keywordFirstRun = useRef(true);
+  useEffect(() => {
+    if (keywordFirstRun.current) {
+      keywordFirstRun.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => void fetchEntries(), 300);
     return () => window.clearTimeout(timer);
-  }, [worldId, categoryId, keyword]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyword]);
 
   /** 创建条目并进入编辑页 */
   const handleCreate = async (event: FormEvent) => {
