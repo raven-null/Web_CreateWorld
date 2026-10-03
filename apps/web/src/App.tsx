@@ -10,8 +10,10 @@ import MyWorldsPage from "./pages/MyWorldsPage";
 import NewWorldPage from "./pages/NewWorldPage";
 import NotFoundPage from "./pages/NotFoundPage";
 import RegisterPage from "./pages/RegisterPage";
+import SettingsPage from "./pages/SettingsPage";
 import WorldEntriesPage from "./pages/WorldEntriesPage";
 import WorldPage from "./pages/WorldPage";
+import WorldSettingsPage from "./pages/WorldSettingsPage";
 
 /**
  * 应用路由：布局 + 各页面。
@@ -27,11 +29,13 @@ export default function App() {
           <Route path="worlds" element={<MyWorldsPage />} />
           <Route path="worlds/new" element={<NewWorldPage />} />
           <Route path="w/:worldId" element={<WorldPage />} />
+          <Route path="w/:worldId/settings" element={<WorldSettingsPage />} />
           <Route path="w/:worldId/entries" element={<WorldEntriesPage />} />
           <Route path="w/:worldId/entries/:entryId" element={<EntryViewPage />} />
           <Route path="w/:worldId/entries/:entryId/edit" element={<EntryEditPage />} />
           <Route path="w/:worldId/entries/:entryId/versions" element={<EntryVersionsPage />} />
           <Route path="admin" element={<AdminPage />} />
+          <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

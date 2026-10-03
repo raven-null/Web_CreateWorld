@@ -35,6 +35,7 @@ export default function WorldPage() {
   const [inviteRole, setInviteRole] = useState("editor");
   const [inviteCode, setInviteCode] = useState("");
   const [inviteError, setInviteError] = useState("");
+  const [joinNotice, setJoinNotice] = useState("");
 
   // 世界 id 或登录状态变化时刷新详情
   useEffect(() => {
@@ -50,6 +51,21 @@ export default function WorldPage() {
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, [worldId, session]);
+
+  /** 加入开放编写世界：成功后刷新详情获得编辑身份 */
+  const handleJoin = async () => {
+    if (!worldId) {
+      return;
+    }
+    setJoinNotice("");
+    try {
+      await api(`/api/worlds/${worldId}/join`, { method: "POST" });
+      const data = await api<WorldDetail>(`/api/worlds/${worldId}`);
+      setWorld(data);
+    } catch (err) {
+      setJoinNotice((err as Error).message);
+    }
+  };
 
   /** 生成世界邀请码（需要世界管理员权限） */
   const handleCreateInvite = async () => {
@@ -98,6 +114,26 @@ export default function WorldPage() {
       </p>
 
       {world.intro && <p>{world.intro}</p>}
+
+      <div style={{ margin: "14px 0", display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {!world.myRole &&
+          world.visibility === "public_edit" &&
+          (session ? (
+            <button type="button" className="btn" onClick={() => void handleJoin()}>
+              参与编写
+            </button>
+          ) : (
+            <Link className="btn" to="/login">
+              登录后参与编写
+            </Link>
+          ))}
+        {(world.myRole === "owner" || world.myRole === "admin") && (
+          <Link className="btn ghost" to={`/w/${world.id}/settings`}>
+            世界设置
+          </Link>
+        )}
+      </div>
+      {joinNotice && <div className="notice error">{joinNotice}</div>}
 
       <div className="section">
         <h2 className="section-title">分类</h2>

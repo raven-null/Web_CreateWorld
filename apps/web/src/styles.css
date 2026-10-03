@@ -718,3 +718,18 @@ a:hover {
   display: flex;
   gap: 8px;
 }
+
+/* ============ 危险操作 ============ */
+.btn.danger {
+  background: #7d3a3a;
+}
+
+.btn.danger:hover {
+  background: var(--danger);
+}
+
+.danger-zone {
+  border: 1px solid #5a3535;
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}

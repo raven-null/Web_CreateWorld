@@ -35,6 +35,7 @@ export default function Layout() {
           {user ? (
             <>
               <span>{user.name}</span>
+              <Link to="/settings">设置</Link>
               <button type="button" className="btn ghost small" onClick={handleSignOut}>
                 退出
               </button>
