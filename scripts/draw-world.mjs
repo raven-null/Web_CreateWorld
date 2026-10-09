@@ -129,11 +129,13 @@ function parseArgs() {
     user: process.env.CW_USER ?? "",
     password: process.env.CW_PASSWORD ?? "",
     world: "",
+    map: "",
     land: 0.32,
     seaLevel: Number.NaN,
     debugRivers: false,
     dryRun: false,
     out: "",
+    sqlOut: "",
   };
   for (let i = 0; i < args.length; i += 1) {
     const key = args[i];
@@ -167,8 +169,16 @@ function parseArgs() {
         options.world = value;
         i += 1;
         break;
+      case "--map":
+        options.map = value;
+        i += 1;
+        break;
       case "--out":
         options.out = value;
+        i += 1;
+        break;
+      case "--sql-out":
+        options.sqlOut = value;
         i += 1;
         break;
       case "--land":
@@ -884,6 +894,51 @@ async function createCanvas(request, worldId, name, width) {
 }
 
 /**
+ * 读取白板元信息（图层、revision、世界 id）。
+ * @param request 请求函数
+ * @param mapId 地图 id
+ * @returns 元信息
+ */
+async function loadCanvas(request, mapId) {
+  const response = await request(`/api/maps/${mapId}/canvas`, { method: "GET" });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`读取白板信息失败（HTTP ${response.status}）：${JSON.stringify(body).slice(0, 200)}`);
+  }
+  return body.data ?? body;
+}
+
+/**
+ * 把瓦片写成 SQL 脚本（用于 D1 直写这条路）。
+ *
+ * 为什么需要它：走 HTTP 上传（PUT /api/maps/:id/tiles）在这张网络上会超时 / 500，
+ * 而 `wrangler d1 execute --file` 是通的，所以留一条「生成 SQL → 直接落库」的后路。
+ * 代价是绕过了服务端的 revision 校验，因此这里自己把 revision 递增上去。
+ *
+ * @param tiles 瓦片数组
+ * @param mapId 地图 id
+ * @param layerId 图层 id
+ * @param revision 递增后的 revision
+ * @returns SQL 文本
+ */
+function buildTileSql(tiles, mapId, layerId, revision) {
+  const lines = [
+    "-- 由 scripts/draw-world.mjs 生成：把地形瓦片直接写入 D1",
+    `DELETE FROM map_tiles WHERE map_id = '${mapId}' AND layer_id = '${layerId}';`,
+  ];
+  const now = Date.now();
+  for (const tile of tiles) {
+    const hex = Buffer.from(tile.data).toString("hex");
+    lines.push(
+      "INSERT OR REPLACE INTO map_tiles (map_id, layer_id, tile_col, tile_row, format, data, updated_at) " +
+        `VALUES ('${mapId}','${layerId}',${tile.col},${tile.row},'cwt1',X'${hex}',${now});`,
+    );
+  }
+  lines.push(`UPDATE maps SET revision = ${revision}, updated_at = ${now} WHERE id = '${mapId}';`);
+  return `${lines.join("\n")}\n`;
+}
+
+/**
  * 分批上传瓦片。
  * @param request 请求函数
  * @param mapId 地图 id
@@ -907,7 +962,13 @@ async function uploadTiles(request, mapId, layerId, tiles, baseRevision) {
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(`上传瓦片失败（HTTP ${response.status}）：${JSON.stringify(body).slice(0, 200)}`);
+      // 服务端 500 时正文常为空：把这一批瓦片的形状一起打出来，便于定位
+      const first = batch[0];
+      throw new Error(
+        `上传瓦片失败（HTTP ${response.status}）：${JSON.stringify(body).slice(0, 300)}` +
+          `\n  本批 ${batch.length} 个瓦片，首个 col=${first?.col} row=${first?.row} data=${first?.data?.length ?? 0}B` +
+          `\n  revision=${revision}`,
+      );
     }
     revision = (body.data ?? body).revision ?? revision + 1;
     const done = Math.min(i + MAX_PER_REQUEST, tiles.length);
@@ -969,6 +1030,23 @@ async function main() {
   await login(request, options.user, options.password);
 
   let worldId = options.world;
+  /** 目标白板：给了 --map 就复用（重画同一张），否则新建 */
+  let mapId = options.map;
+  let layerId = "";
+  let baseRevision = 0;
+
+  if (mapId) {
+    // 复用已有白板：读取它当前的 revision 与地形图层，避免每次重跑都堆一张新地图
+    const meta = await loadCanvas(request, mapId);
+    layerId = meta.layers.find((layer) => layer.storage === "raster")?.id ?? "";
+    worldId = worldId || meta.worldId;
+    baseRevision = meta.revision;
+    if (!layerId) {
+      throw new Error("这张地图没有可写入的栅格图层");
+    }
+    console.log(`复用白板 ${mapId}（revision=${baseRevision}，图层 ${layerId}）`);
+  }
+
   if (!worldId) {
     const worlds = await listWorlds(request);
     if (worlds.length === 0) {
@@ -983,11 +1061,24 @@ async function main() {
     console.log(`使用唯一个世界：${worlds[0].name}`);
   }
 
-  console.log(`创建白板「${options.name}」…`);
-  const created = await createCanvas(request, worldId, options.name, width);
-  console.log(`  地图 id：${created.id}  地形图层 id：${created.terrainLayerId}`);
+  if (!mapId) {
+    console.log(`创建白板「${options.name}」…`);
+    const created = await createCanvas(request, worldId, options.name, width);
+    mapId = created.id;
+    layerId = created.terrainLayerId;
+    console.log(`  地图 id：${mapId}  地形图层 id：${layerId}`);
+  }
 
-  await uploadTiles(request, created.id, created.terrainLayerId, tiles, 0);
+  if (options.sqlOut) {
+    // 不走上传：把瓦片写成 SQL，交给 `wrangler d1 execute --file` 直接落库
+    const sql = buildTileSql(tiles, mapId, layerId, baseRevision + 1);
+    writeFileSync(options.sqlOut, sql, "utf8");
+    console.log(`SQL 已写出：${options.sqlOut}（${(sql.length / 1024).toFixed(0)} KB，revision → ${baseRevision + 1}）`);
+    console.log(`下一步：cd apps/server && pnpm exec wrangler d1 execute create-world-db-apac --remote --file <绝对路径>`);
+    return;
+  }
+
+  await uploadTiles(request, mapId, layerId, tiles, baseRevision);
 
   const url = new URL(`/worlds/${worldId}/maps`, options.base).href;
   console.log(`✅ 已画好。打开地图页查看：${url}`);
