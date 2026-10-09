@@ -11,12 +11,13 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --configLoader runner"
   },
   "dependencies": {
     "@worldmap/core": "workspace:*"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }

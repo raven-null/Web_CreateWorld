@@ -5,3 +5,4 @@
  * 插件本体只认契约，因此换宿主时只需要换这一层。
  */
 export * from "./http-adapter";
+export * from "./indexeddb-draft";

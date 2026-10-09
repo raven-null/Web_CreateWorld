@@ -52,7 +52,7 @@ mapRoutes.get("/worlds/:worldId/maps", async (c) => {
   }
 
   const result = await c.env.DB.prepare(
-    `SELECT m.id, m.name, m.image_key, m.created_at,
+    `SELECT m.id, m.name, m.image_key, m.kind, m.created_at,
             (SELECT COUNT(*) FROM markers k WHERE k.map_id = m.id) AS markerCount
      FROM maps m
      WHERE m.world_id = ?
@@ -66,7 +66,9 @@ mapRoutes.get("/worlds/:worldId/maps", async (c) => {
     (result.results ?? []).map((row) => ({
       id: row.id as string,
       name: row.name as string,
-      imageUrl: `/api/images/${row.image_key as string}`,
+      // kind 用于前端区分「画布型（可进编辑器）」与「图片型（沿用 Leaflet 页面）」
+      kind: (row.kind as string | null) ?? "image",
+      imageUrl: row.image_key ? `/api/images/${row.image_key as string}` : "",
       markerCount: Number(row.markerCount ?? 0),
       createdAt: row.created_at as number,
     })),

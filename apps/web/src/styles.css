@@ -1543,3 +1543,418 @@ mark {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+   登录页：交互动画角色
+   布局与交互参考 guohaolian/animatedlogin；配色沿用本项目视觉体系
+   （深色墨底 + 金色强调），不照搬参考项目的浅紫配色。
+   ========================================================================== */
+
+.wme-login {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+/* ---------- 左侧：角色舞台 ---------- */
+
+.wme-login-left {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 28px 32px;
+  background:
+    radial-gradient(120% 90% at 30% 100%, rgba(201, 161, 92, 0.1), transparent 60%),
+    linear-gradient(160deg, #1b1814 0%, #12100d 100%);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.wme-login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wme-login-mark {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 3px rgba(201, 161, 92, 0.18);
+}
+
+.wme-login-name {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  letter-spacing: 0.18em;
+  color: var(--text);
+}
+
+.wme-login-foot {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+/* 角色舞台：底部对齐排开 */
+.wme-characters {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 8px;
+}
+
+.wme-characters-stage {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  /* 让角色看起来站在地面上 */
+  border-bottom: 1px solid rgba(201, 161, 92, 0.12);
+  padding: 0 12px;
+}
+
+.wme-char {
+  position: relative;
+  width: var(--w);
+  height: var(--h);
+  /* 身体倾斜与面部朝向由脚本写入这两个变量 */
+  transform: skewX(var(--skew, 0deg));
+  transition: transform 0.7s ease-in-out;
+  transform-origin: bottom center;
+}
+
+.wme-char-gold {
+  border-radius: 84px 84px 20px 20px;
+  z-index: 1;
+}
+.wme-char-ink {
+  border-radius: 58px 58px 16px 16px;
+  z-index: 2;
+}
+.wme-char-clay {
+  border-radius: 120px 120px 16px 16px;
+  z-index: 3;
+}
+.wme-char-moss {
+  border-radius: 68px 68px 14px 14px;
+  z-index: 4;
+}
+
+/* 眼睛容器：整体随面部朝向平移 */
+.wme-eyes {
+  position: absolute;
+  top: 22%;
+  left: 50%;
+  display: flex;
+  gap: 14px;
+  transform: translate(calc(-50% + var(--face-x, 0px)), var(--face-y, 0px));
+  transition: transform 0.7s ease-in-out;
+}
+
+/* 眼球型（金色、墨色）：白底 + 瞳孔 */
+.wme-eye {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ece5d8;
+  overflow: hidden;
+  transition: height 0.15s ease;
+}
+
+/* 眨眼：容器高度收缩，CSS 过渡即可，无需关键帧 */
+.wme-eyes.wme-blinking .wme-eye {
+  height: 2px;
+}
+
+.wme-pupil {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #221f1b;
+  transition: transform 0.1s ease-out;
+}
+
+/* 裸瞳型（陶土、苔色）：只有瞳孔 */
+.wme-bare-pupil {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #2a2622;
+  transition: transform 0.1s ease-out;
+}
+
+/* 苔色角色的嘴线 */
+.wme-mouth-line {
+  position: absolute;
+  top: 46%;
+  left: 50%;
+  width: 46px;
+  height: 4px;
+  border-radius: 2px;
+  background: #38402c;
+  transform: translate(calc(-50% + var(--face-x, 0px)), var(--face-y, 0px));
+  transition: transform 0.7s ease-in-out;
+}
+
+/* 陶土角色的悲伤嘴：登录失败时才浮现 */
+.wme-mouth-sad {
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  width: 30px;
+  height: 15px;
+  border-radius: 0 0 30px 30px;
+  border-bottom: 4px solid #5c3a30;
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.wme-login.is-failed .wme-mouth-sad {
+  opacity: 1;
+}
+
+/* 金色角色的「偷看」：密码可见时偶尔瞥一眼 */
+.wme-char-gold.wme-peeking .wme-eyes {
+  transform: translate(calc(-50% + 4px), 5px);
+  transition: transform 0.25s ease-out;
+}
+
+/* 摇头：登录失败时所有眼睛与嘴线一起摆 */
+@keyframes wme-shake-head {
+  0%, 100% { margin-left: 0; }
+  10% { margin-left: -9px; }
+  20% { margin-left: 7px; }
+  30% { margin-left: -6px; }
+  40% { margin-left: 5px; }
+  50% { margin-left: -4px; }
+  60% { margin-left: 3px; }
+  70% { margin-left: -2.5px; }
+  80% { margin-left: 2px; }
+  90% { margin-left: -0.5px; }
+}
+
+.wme-login.is-failed .wme-eyes,
+.wme-login.is-failed .wme-mouth-line {
+  animation: wme-shake-head 0.8s cubic-bezier(0.36, 0.07, 0.19, 0.97) 0.35s;
+}
+
+/* ---------- 右侧：登录表单 ---------- */
+
+.wme-login-right {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 32px;
+}
+
+.wme-login-card {
+  width: 100%;
+  max-width: 360px;
+}
+
+.wme-login-sparkle {
+  display: block;
+  font-size: 20px;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+
+.wme-login-title {
+  margin: 0 0 6px;
+  font-family: var(--font-serif);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.wme-login-subtitle {
+  margin: 0 0 26px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.wme-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 下划线风格输入框 */
+.wme-field {
+  display: block;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  transition: border-color 0.3s ease;
+}
+
+.wme-field:focus-within {
+  border-color: var(--accent);
+}
+
+.wme-field.is-error {
+  border-color: var(--danger);
+}
+
+.wme-field-label {
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+  transition: color 0.3s ease;
+}
+
+.wme-field:focus-within .wme-field-label {
+  color: var(--accent);
+}
+
+.wme-field.is-error .wme-field-label {
+  color: var(--danger);
+}
+
+.wme-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wme-field-input {
+  flex: 1;
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  padding: 4px 0;
+  font-family: inherit;
+}
+
+.wme-eye-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  transition: color 0.2s ease;
+}
+
+.wme-eye-toggle:hover {
+  color: var(--accent);
+}
+
+.wme-error {
+  padding: 9px 12px;
+  border: 1px solid rgba(194, 94, 94, 0.45);
+  border-radius: var(--radius);
+  background: rgba(194, 94, 94, 0.1);
+  color: #d98b8b;
+  font-size: 13px;
+}
+
+/* 药丸按钮：悬停时文字滑出、金色遮罩与箭头滑入 */
+.wme-submit {
+  position: relative;
+  height: 44px;
+  border: none;
+  border-radius: 22px;
+  background: var(--accent-soft);
+  color: #f4efe6;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  overflow: hidden;
+  font-family: inherit;
+  transition: background 0.3s ease;
+}
+
+.wme-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.wme-submit-text {
+  display: block;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.wme-submit:hover:not(:disabled) .wme-submit-text {
+  transform: translateX(140%);
+  opacity: 0;
+}
+
+.wme-submit-hover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #14120f;
+  transform: translateX(-100%);
+  transition: transform 0.3s ease;
+}
+
+.wme-submit:hover:not(:disabled) .wme-submit-hover {
+  transform: translateX(0);
+}
+
+.wme-submit-arrow {
+  transition: transform 0.3s ease;
+}
+
+.wme-submit:hover:not(:disabled) .wme-submit-arrow {
+  transform: translateX(3px);
+}
+
+.wme-login-hint {
+  margin: 22px 0 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.8;
+}
+
+/* ---------- 响应式：窄屏隐藏角色，只留表单 ---------- */
+
+@media (max-width: 900px) {
+  .wme-login {
+    grid-template-columns: 1fr;
+  }
+
+  .wme-login-left {
+    display: none;
+  }
+
+  .wme-login-right {
+    padding: 32px 20px;
+  }
+}
+
+/* 尊重「减少动态效果」偏好：关掉跟随与摇头动画 */
+@media (prefers-reduced-motion: reduce) {
+  .wme-char,
+  .wme-eyes,
+  .wme-mouth-line,
+  .wme-pupil,
+  .wme-bare-pupil {
+    transition: none;
+  }
+
+  .wme-login.is-failed .wme-eyes,
+  .wme-login.is-failed .wme-mouth-line {
+    animation: none;
+  }
+}

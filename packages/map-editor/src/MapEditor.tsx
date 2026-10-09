@@ -105,6 +105,12 @@ export function MapEditor(props: MapEditorProps) {
   const [markerCount, setMarkerCount] = useState(0);
   /** 当前选中的标记 id（用 ref 给渲染循环读，避免每帧重渲染） */
   const selectedMarkerIdRef = useRef<string | null>(null);
+  /** 本地草稿：发现比服务端更新的草稿时，提示用户是否恢复 */
+  const [draftPrompt, setDraftPrompt] = useState<{ savedAt: number } | null>(null);
+  const [draftState, setDraftState] = useState<"none" | "pending" | "saved">("none");
+  /** 草稿定时器，以及「取当前草稿瓦片」的实现（由 effect 按依赖重建） */
+  const draftTimerRef = useRef<number | null>(null);
+  const draftCaptureRef = useRef<(() => Promise<void>) | null>(null);
 
   viewportRef.current = viewport;
   brushRef.current = brush;
@@ -168,6 +174,28 @@ export function MapEditor(props: MapEditorProps) {
           setMarkerCount(markerTotal);
           setMarkerTick((tick) => tick + 1);
         }
+
+        // 本地草稿：若存在且比服务端更新，提示恢复（不静默覆盖，也不静默丢弃）
+        const drafts = props.drafts;
+        const rasterLayerId = result.layers.find((layer) => layer.storage === "raster")?.id;
+        if (drafts && rasterLayerId) {
+          try {
+            const draft = await drafts.load(mapId);
+            const serverUpdatedAt = result.updatedAt ?? 0;
+            if (draft && draft.tiles.length > 0 && draft.savedAt > serverUpdatedAt) {
+              if (!cancelled) {
+                setDraftPrompt({ savedAt: draft.savedAt });
+                props.onDraftAvailable?.(draft.savedAt);
+              }
+            } else if (draft) {
+              // 服务端更新或草稿已失效：清掉，避免每次打开都触发
+              await drafts.clear(mapId);
+            }
+          } catch {
+            // 草稿读取失败不能影响编辑
+          }
+        }
+
         setHistoryTick((tick) => tick + 1);
       } catch (err) {
         if (!cancelled) {
@@ -296,6 +324,15 @@ export function MapEditor(props: MapEditorProps) {
       if (metaRef.current) {
         metaRef.current = { ...metaRef.current, revision };
       }
+      // 已成功落到服务端：本地草稿不再需要
+      if (props.drafts) {
+        try {
+          await props.drafts.clear(mapId);
+          setDraftState("none");
+        } catch {
+          // 清理失败不影响保存结果
+        }
+      }
       setSaveState("saved");
       props.onSaveStateChange?.("saved");
       props.onDirtyChange?.(false);
@@ -309,7 +346,7 @@ export function MapEditor(props: MapEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adapter, mapId, readOnly, props]);
 
-  /** 安排一次空闲自动保存（停止绘制 3 秒后） */
+  /** 安排空闲自动保存 */
   const scheduleAutoSave = useCallback((): void => {
     if (readOnly) {
       return;
@@ -322,6 +359,47 @@ export function MapEditor(props: MapEditorProps) {
       void saveNow();
     }, IDLE_SAVE_DELAY);
   }, [readOnly, saveNow]);
+
+  /**
+   * 安排一次本地草稿写入（防抖 1 秒）。
+   *
+   * 触发点放在**笔画结束时**而不是每个落点：一次笔画可能几百个采样点，
+   * 逐点写 IndexedDB 既无意义也拖慢绘制。
+   */
+  const scheduleDraftSave = useCallback((): void => {
+    const capture = draftCaptureRef.current;
+    if (!capture || readOnly) {
+      return;
+    }
+    if (draftTimerRef.current !== null) {
+      window.clearTimeout(draftTimerRef.current);
+    }
+    draftTimerRef.current = window.setTimeout(() => {
+      draftTimerRef.current = null;
+      void capture();
+    }, 1000);
+  }, [readOnly]);
+
+  /** 每次依赖变化时重建「取草稿瓦片」的实现 */
+  useEffect(() => {
+    const drafts = props.drafts;
+    const metaValue = meta;
+    const store = storeRef.current;
+    const rasterLayerId = metaValue?.layers.find((layer) => layer.storage === "raster")?.id;
+    if (!drafts || !metaValue || !store || !rasterLayerId) {
+      draftCaptureRef.current = null;
+      return;
+    }
+    draftCaptureRef.current = async (): Promise<void> => {
+      const tiles = await store.takeDirtyTiles();
+      if (tiles.length === 0) {
+        return;
+      }
+      // 只暂存变化瓦片（通常几个到几十 KB），不是整幅栅格
+      await drafts.save({ mapId, savedAt: Date.now(), tiles });
+      setDraftState("pending");
+    };
+  }, [props.drafts, meta, mapId, historyTick]);
 
   // 卸载时清掉待触发的自动保存
   useEffect(() => {
@@ -510,7 +588,8 @@ export function MapEditor(props: MapEditorProps) {
     setDirtyCount(store.dirtyCount);
     setHistoryTick((tick) => tick + 1);
     scheduleAutoSave();
-  }, [rebuildOffscreen, scheduleAutoSave]);
+    scheduleDraftSave();
+  }, [rebuildOffscreen, scheduleAutoSave, scheduleDraftSave]);
 
   /** 重做一步 */
   const redo = useCallback((): void => {
@@ -525,7 +604,52 @@ export function MapEditor(props: MapEditorProps) {
     setDirtyCount(store.dirtyCount);
     setHistoryTick((tick) => tick + 1);
     scheduleAutoSave();
-  }, [rebuildOffscreen, scheduleAutoSave]);
+    scheduleDraftSave();
+  }, [rebuildOffscreen, scheduleAutoSave, scheduleDraftSave]);
+
+  /** 恢复本地草稿（用户确认后） */
+  const handleRestoreDraft = useCallback(async (): Promise<void> => {
+    const drafts = props.drafts;
+    const store = storeRef.current;
+    if (!drafts || !store) {
+      setDraftPrompt(null);
+      return;
+    }
+    try {
+      const draft = await drafts.load(mapId);
+      if (!draft || draft.tiles.length === 0) {
+        setDraftPrompt(null);
+        return;
+      }
+      await store.applyTiles(draft.tiles);
+      rebuildOffscreen();
+      setDirtyCount(store.dirtyCount);
+      setHistoryTick((tick) => tick + 1);
+      setDraftPrompt(null);
+      setDraftState("pending");
+      props.onDirtyChange?.(true);
+    } catch (err) {
+      props.onError?.(err as Error);
+      setDraftPrompt(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.drafts, mapId, rebuildOffscreen, props]);
+
+  /** 放弃本地草稿 */
+  const handleDiscardDraft = useCallback(async (): Promise<void> => {
+    const drafts = props.drafts;
+    setDraftPrompt(null);
+    if (!drafts) {
+      return;
+    }
+    try {
+      await drafts.clear(mapId);
+      setDraftState("none");
+    } catch {
+      // 清理失败不影响继续编辑
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.drafts, mapId]);
 
   /** 指针按下：按当前工具决定绘制 / 取色 / 平移 */
   const handlePointerDown = useCallback(
@@ -690,6 +814,8 @@ export function MapEditor(props: MapEditorProps) {
         historyRef.current.commit();
         setHistoryTick((tick) => tick + 1);
         scheduleAutoSave();
+        // 笔画结束才写本地草稿：一次笔画几百个采样点，逐点写没有意义
+        scheduleDraftSave();
       } else if (hadPan) {
         // 平移不需要保存
       }
@@ -758,12 +884,7 @@ export function MapEditor(props: MapEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingMarker, markerLabel, props]);
 
-  /**
-   * 删除标记。
-   * 主站既有地图页用的是原生确认弹窗（未自写 Confirm 组件），这里保持一致，
-   * 由宿主通过 `confirm` 注入的语义仍可替换（本期直接用原生）。
-   * @param marker 待删除的标记
-   */
+  /** 删除标记（二次确认） */
   const handleDeleteMarker = useCallback(
     async (marker: CanvasMarker): Promise<void> => {
       const store = markerStoreRef.current;
@@ -1007,6 +1128,32 @@ export function MapEditor(props: MapEditorProps) {
           </div>
         )}
 
+        {/* 本地草稿恢复提示：不静默覆盖，也不静默丢弃 */}
+        {draftPrompt && (
+          <div
+            style={{
+              position: "absolute",
+              left: 12,
+              right: 12,
+              top: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "8px 10px",
+              background: theme.panel,
+              border: `1px solid ${theme.accent}`,
+              borderRadius: theme.radius,
+              fontSize: 13,
+            }}
+          >
+            <span style={{ flex: 1 }}>
+              发现未保存的本地内容（{formatTime(draftPrompt.savedAt)}），是否恢复？
+            </span>
+            <ToolButton theme={theme} label="恢复" onClick={() => void handleRestoreDraft()} />
+            <ToolButton theme={theme} label="放弃" onClick={() => void handleDiscardDraft()} />
+          </div>
+        )}
+
         {/* 新增标记的命名表单（就地输入，不弹独立窗口） */}
         {pendingMarker && (
           <div
@@ -1144,6 +1291,9 @@ export function MapEditor(props: MapEditorProps) {
         </span>
         <span>待保存瓦片 {dirtyCount}</span>
         {markerCount > 0 && <span>标记 {markerCount}</span>}
+        {draftState !== "none" && (
+          <span>{draftState === "saved" ? "本地草稿已保存" : "本地草稿：有未同步内容"}</span>
+        )}
         <span>
           {readOnly
             ? "只读"
@@ -1238,6 +1388,24 @@ function buildImageData(
     }
   }
   return new ImageData(rgba, width, height);
+}
+
+/**
+ * 把时间戳格式化成「刚刚 / N 分钟前 / 具体时间」，用于草稿提示。
+ * @param timestamp 时间戳
+ * @returns 可读文案
+ */
+function formatTime(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  if (diff < 60_000) {
+    return "刚刚";
+  }
+  if (diff < 3_600_000) {
+    return `${Math.floor(diff / 60_000)} 分钟前`;
+  }
+  const date = new Date(timestamp);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /**

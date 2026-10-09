@@ -10,6 +10,8 @@ import { showToast } from "../lib/toast";
 interface MapListItem {
   id: string;
   name: string;
+  /** image = 图片底图（走本页的 Leaflet）；canvas = 球面白板（进地图编辑器） */
+  kind: string;
   imageUrl: string;
   markerCount: number;
   createdAt: number;
@@ -371,6 +373,8 @@ export default function MapsPage() {
   }
 
   const markerFormOpen = pendingMarker !== null || editingMarker !== null;
+  // 当前选中的是画布型地图时，给出「进地图编辑器」的入口
+  const activeIsCanvas = maps.find((item) => item.id === activeMapId)?.kind === "canvas";
 
   return (
     <>
@@ -419,6 +423,11 @@ export default function MapsPage() {
         <button type="button" className="btn ghost small" onClick={() => setShowCreate(true)}>
           + 新建地图
         </button>
+        {activeIsCanvas && activeMapId && (
+          <Link to={`/maps/${activeMapId}/edit`} className="btn small">
+            打开地图编辑器
+          </Link>
+        )}
       </div>
 
       {showCreate && (

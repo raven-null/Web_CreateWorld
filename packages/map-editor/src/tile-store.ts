@@ -147,6 +147,31 @@ export class RasterTileStore {
   }
 
   /**
+   * 把一组瓦片写入全幅栅格（用于恢复本地草稿）。
+   * 只改内存与脏标记，不碰 baseline。
+   * @param tiles 待写入的瓦片
+   * @returns 成功写入的瓦片数
+   */
+  async applyTiles(tiles: Tile[]): Promise<number> {
+    let applied = 0;
+    for (const tile of tiles) {
+      const slice = await this.decodeToIndices(tile, tile.coord);
+      if (!slice) {
+        continue;
+      }
+      this.blitTile(tile.coord, slice);
+      this.markDirty({
+        x: tile.coord.col * TILE_SIZE,
+        y: tile.coord.row * TILE_SIZE,
+        width: Math.min(TILE_SIZE, this.width - tile.coord.col * TILE_SIZE),
+        height: Math.min(TILE_SIZE, this.height - tile.coord.row * TILE_SIZE),
+      });
+      applied += 1;
+    }
+    return applied;
+  }
+
+  /**
    * 标记某个像素矩形覆盖到的瓦片为脏。
    * @param rect 世界像素矩形
    */

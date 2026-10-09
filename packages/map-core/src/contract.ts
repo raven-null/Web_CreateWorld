@@ -11,9 +11,7 @@
  * - 宿主不必实现全部方法：缺接口只少能力，不应启动失败
  */
 import type { MapScaleStats } from "./stats";
-import type { DraftStore, FeatureQuery, MapFeature, MapLayer, MapMeta, Tile, TileCoord } from "./types";
-
-/** 瓦片保存结果 */
+import type { DraftStore, FeatureQuery, MapFeature, MapLayer, MapMeta, Tile, TileCoord } from "./types";/** 瓦片保存结果 */
 export interface SaveTilesResult {
   /** 保存后的新版本号 */
   revision: number;
@@ -79,9 +77,6 @@ export interface MapHostAdapter {
 
   /** 把尺度统计交给宿主持久化（不实现则仅客户端统计） */
   saveStats?(mapId: string, stats: MapScaleStats): Promise<void>;
-
-  /** 本地草稿；不实现则退化为仅内存，离开页面即丢 */
-  drafts?: DraftStore;
 
   /** 读取标记列表（锚点对象）。宿主不实现则画布不显示标记 */
   loadMarkers?(mapId: string): Promise<HostMarker[]>;
@@ -150,6 +145,13 @@ export interface MapEditorProps {
   adapter: MapHostAdapter;
   /** 只读模式（公开世界、分享页、只读嵌入） */
   readOnly?: boolean;
+  /**
+   * 本地草稿（可选）：由宿主提供实现（Web 用 IndexedDB，桌面 / 手机用 SQLite）。
+   *
+   * 之所以放在 props 而不是适配器里：草稿是「本地暂存」这件事的抽象，
+   * 与「访问后端」不是一回事 —— 换后端（HTTP → SQLite）时草稿实现可以不变。
+   */
+  drafts?: DraftStore;
   /** 初始视图：经纬度中心 + 缩放 */
   initialView?: { lon: number; lat: number; zoom: number };
   theme?: Partial<MapEditorTheme>;
@@ -162,6 +164,8 @@ export interface MapEditorProps {
   onMarkerClick?: (markerId: string, linkRef?: string) => void;
   onError?: (error: Error) => void;
   onStatsChange?: (stats: MapScaleStats) => void;
+  /** 检测到比服务端更新的本地草稿时通知宿主（宿主可自行提示，不实现则由插件内提示） */
+  onDraftAvailable?: (savedAt: number) => void;
 }
 
 /** 命令式 API：通过 ref 调用 */

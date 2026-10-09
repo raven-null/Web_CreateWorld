@@ -134,6 +134,8 @@ export interface MapMeta {
   board: BoardSpec;
   /** 版本号：每次保存 +1，用于冲突检测 */
   revision: number;
+  /** 服务端最后更新时间（用于判断本地草稿是否更新） */
+  updatedAt?: number;
   /** 地形调色板 */
   palette: TerrainBrush[];
   layers: MapLayer[];
