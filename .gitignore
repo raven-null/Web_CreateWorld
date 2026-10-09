@@ -26,3 +26,6 @@ out/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 临时参考目录（clone 外部仓库查看实现时用，用完即删）
+.tmp-ref/
