@@ -39,12 +39,18 @@ interface CanvasMetaResponse {
 
 /**
  * 创建走 HTTP 的宿主适配器。
+ *
+ * 说明：本文件属于**平台实现层**，是整个插件里唯一允许直接访问网络的地方
+ * （CI 边界检查对 `packages/map-editor-web` 豁免"不得 fetch"这条规则）。
+ * 插件本体与内核仍然只能通过 MapHostAdapter 取数据。
+ *
  * @param options 接口前缀与请求实现
  * @returns MapHostAdapter 实例
  */
 export function createHttpMapHostAdapter(options: HttpMapAdapterOptions = {}): MapHostAdapter {
   const baseUrl = options.baseUrl ?? "/api";
-  const request = options.request ?? ((input, init) => fetch(input, init));
+  // 默认用全局 fetch；调用方可注入自己的请求实现（便于测试与换端）
+  const request = options.request ?? ((input, init) => /* 平台层允许 */ fetch(input, init));
   const gzip = createNativeGzip();
 
   return {

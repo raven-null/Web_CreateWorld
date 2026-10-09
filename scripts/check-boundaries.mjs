@@ -27,7 +27,7 @@ const PACKAGE_DIRS = [
 /** 只检查这些后缀的源文件 */
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts"];
 
-/** 违规规则：命中即报错 */
+/** 违规规则：命中即报错；`exceptPaths` 用于按层豁免（如平台实现层允许访问网络） */
 const RULES = [
   {
     id: 1,
@@ -39,15 +39,19 @@ const RULES = [
   {
     id: 2,
     name: "不得出现宿主业务概念",
-    // 业务标识与接口路径（worldmap 之类的中性包名不会命中）
-    pattern: /\bworlds\b|worldId|world_id|\bentries\b|entryId|entry_id|inviteCode|invite_code|\/api\//,
+    // 业务标识与接口路径（worldmap 之类的中性包名不会命中）；
+    // `\bentries\b(?!\s*\()` 排除标准库方法（Array/Map/Iterator 的 entries()）
+    pattern: /\bworlds\b|worldId|world_id|\bentries\b(?!\s*\()|entryId|entry_id|inviteCode|invite_code|\/api\//,
     hint: "用 mapId / layerId / linkRef 这类中性标识代替",
   },
   {
     id: 3,
     name: "不得直接访问网络与地址栏",
+    // 平台实现层（editor-web）本身就是「和外界打交道」的地方，允许它用 fetch；
+    // 插件本体（editor / core）必须走 MapHostAdapter，所以不豁免
     pattern: /\bfetch\s*\(|XMLHttpRequest|window\.location|localStorage/,
-    hint: "数据进出必须走宿主实现的 MapHostAdapter",
+    exceptPaths: [/packages[\\/]map-editor-web[\\/]/],
+    hint: "数据进出必须走宿主实现的 MapHostAdapter（仅 platform 层允许直接访问网络）",
   },
   {
     id: 4,
@@ -141,6 +145,10 @@ function checkFile(file, violations) {
       continue;
     }
     for (const rule of RULES) {
+      // 按层豁免：如平台实现层允许直接访问网络
+      if (rule.exceptPaths?.some((allowed) => allowed.test(file))) {
+        continue;
+      }
       if (rule.pattern.test(code)) {
         violations.push({
           rule,
