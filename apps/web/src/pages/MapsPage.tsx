@@ -90,13 +90,6 @@ export default function MapsPage() {
     loadLists().catch((err: Error) => setError(err.message));
   }, [worldId, loadLists]);
 
-  // 列表为空时自动打开新建表单（新世界进地图页的第一个动作必然是建图）
-  useEffect(() => {
-    if (!error && maps.length === 0) {
-      setShowCreate(true);
-    }
-  }, [maps.length, error]);
-
   const activeMap = maps.find((item) => item.id === activeMapId) ?? null;
   const isCanvas = activeMap?.kind === "canvas";
 

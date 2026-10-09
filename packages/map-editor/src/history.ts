@@ -15,9 +15,86 @@ export interface HistoryEntry {
   label: string;
   /** 属于哪个图层：多图层下撤销必须回到原图层 */
   layerId: string;
+  /** 受影响区域（一次笔画 = 整条笔画的外接矩形） */
   rect: PixelRect;
+  /** 该区域在**本步开始前**的像素 */
   before: Uint8Array;
+  /** 该区域在**本步结束后**的像素 */
   after: Uint8Array;
+}
+
+/** 待入栈的一步（笔画进行中） */
+interface PendingStep {
+  label: string;
+  layerId: string;
+  /** 当前已覆盖区域的外接矩形 */
+  bounds: PixelRect;
+  /**
+   * 开始前的像素：按**固定网格块**保存。
+   *
+   * 必须按固定网格而不是「每个落点一块」：相邻落点之间有空隙，
+   * 只保存落点自身会在空隙处留下空洞（撤销时把地形抹掉）。
+   * 按网格分块后，每个块第一次被碰到时就整块快照，块内绝对完整。
+   */
+  beforeChunks: Map<string, { rect: PixelRect; data: Uint8Array }>;
+}
+
+/** 网格块边长（与瓦片一致：一屏笔画通常只涉及 1~4 块） */
+const CHUNK_SIZE = 256;
+
+/** 从仓库读取一块矩形像素（`commit` 时用来取结束状态快照） */
+export type RectReader = (rect: PixelRect) => Uint8Array;
+
+/**
+ * 把 b 合并进 a，返回二者的外接矩形（把 a 看作「左上角 + 宽高」）。
+ * @param a 原矩形
+ * @param b 待并入的矩形
+ * @returns 合并后的外接矩形
+ */
+function unionRect(a: PixelRect, b: PixelRect): PixelRect {
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  const right = Math.max(a.x + a.width, b.x + b.width);
+  const bottom = Math.max(a.y + a.height, b.y + b.height);
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/**
+ * 把矩形对齐到网格块（向外扩到块边界）。
+ * @param rect 原矩形
+ * @returns 对齐后的矩形
+ */
+function alignToChunk(rect: PixelRect): PixelRect {
+  const x = Math.floor(rect.x / CHUNK_SIZE) * CHUNK_SIZE;
+  const y = Math.floor(rect.y / CHUNK_SIZE) * CHUNK_SIZE;
+  const right = Math.ceil((rect.x + rect.width) / CHUNK_SIZE) * CHUNK_SIZE;
+  const bottom = Math.ceil((rect.y + rect.height) / CHUNK_SIZE) * CHUNK_SIZE;
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+/** 从若干分块快照拼出整块矩形的像素（未覆盖到的位置填 0） */
+function blitChunks(
+  bounds: PixelRect,
+  chunks: Iterable<{ rect: PixelRect; data: Uint8Array }>,
+): Uint8Array {
+  const out = new Uint8Array(bounds.width * bounds.height);
+  for (const chunk of chunks) {
+    // 分块可能比目标区域大（网格对齐会外扩），逐行逐列裁剪
+    for (let row = 0; row < chunk.rect.height; row += 1) {
+      const targetY = chunk.rect.y + row - bounds.y;
+      if (targetY < 0 || targetY >= bounds.height) {
+        continue;
+      }
+      const sourceRowStart = row * chunk.rect.width;
+      const firstCol = Math.max(0, bounds.x - chunk.rect.x);
+      const lastCol = Math.min(chunk.rect.width, bounds.x + bounds.width - chunk.rect.x);
+      for (let col = firstCol; col < lastCol; col += 1) {
+        const targetX = chunk.rect.x + col - bounds.x;
+        out[targetY * bounds.width + targetX] = chunk.data[sourceRowStart + col] ?? 0;
+      }
+    }
+  }
+  return out;
 }
 
 /** 历史栈默认深度（方案 §9.2：30 步） */
@@ -36,13 +113,7 @@ export class HistoryStack {
   private readonly past: HistoryEntry[] = [];
   private readonly future: HistoryEntry[] = [];
   private readonly limit: number;
-  private pending: {
-    label: string;
-    layerId: string;
-    rect: PixelRect | null;
-    before: Uint8Array | null;
-    after: Uint8Array | null;
-  } | null = null;
+  private pending: PendingStep | null = null;
 
   constructor(limit = DEFAULT_HISTORY_LIMIT) {
     this.limit = Math.max(1, limit);
@@ -63,44 +134,61 @@ export class HistoryStack {
    * @param label 步骤描述
    */
   begin(label: string): void {
-    this.pending = { label, layerId: "", rect: null, before: null, after: null };
+    this.pending = { label, layerId: "", bounds: { x: 0, y: 0, width: 0, height: 0 }, beforeChunks: new Map() };
   }
 
   /**
-   * 记录一次落点对区域的影响。
+   * 记录一次落点影响到的区域（**累加**，不是覆盖）。
    *
-   * `before` 与 `after` 由调用方负责读取（栈只负责保存与回放）。
+   * 一次拖动会有几十个落点，若只记最后一个，撤销 / 重做就只回退笔画的末尾
+   * ——用户看到的现象是「点了撤销 / 重做，画面几乎没变」。
+   *
    * @param layerId 所在图层
-   * @param rect 受影响矩形
-   * @param before 修改前的像素
-   * @param after 修改后的像素
+   * @param rect 本次落点影响的矩形
+   * @param reader 从仓库读取像素的函数（由调用方提供，栈不接触数据源）
    */
-  record(layerId: string, rect: PixelRect, before: Uint8Array, after: Uint8Array): void {
-    if (!this.pending) {
+  record(layerId: string, rect: PixelRect, reader: RectReader): void {
+    const pending = this.pending;
+    if (!pending || rect.width <= 0 || rect.height <= 0) {
       return;
     }
-    this.pending.layerId = layerId;
-    this.pending.rect = rect;
-    this.pending.before = before;
-    this.pending.after = after;
+    pending.layerId = layerId;
+    if (pending.bounds.width === 0 || pending.bounds.height === 0) {
+      pending.bounds = rect;
+    } else {
+      pending.bounds = unionRect(pending.bounds, rect);
+    }
+    // 只在这里读「改动前」的像素：此刻本次落点还没写数据。
+    // 按网格块缓存，同一块只读一次
+    const chunk = alignToChunk(rect);
+    const key = `${chunk.x}:${chunk.y}`;
+    if (!pending.beforeChunks.has(key)) {
+      pending.beforeChunks.set(key, { rect: chunk, data: reader(chunk) });
+    }
   }
 
   /**
    * 结束一步并入栈。
-   * 没有任何记录（例如在画布外落笔）时自动丢弃，避免产生空步。
+   *
+   * 结束状态（after）在**这一刻**统一读取，因此保存的是整条笔画真实结果；
+   * 没有任何记录（例如在画布外落笔、或数据与改动前完全一致）时自动丢弃，避免空步。
+   *
+   * @param reader 从仓库读取像素的函数；不传则不会入栈
    */
-  commit(): void {
+  commit(reader?: RectReader): void {
     const pending = this.pending;
     this.pending = null;
-    if (!pending || !pending.rect || !pending.before || !pending.after) {
+    if (!pending || pending.bounds.width <= 0 || pending.bounds.height <= 0 || !reader) {
       return;
     }
+    const before = blitChunks(pending.bounds, pending.beforeChunks.values());
+    const after = reader(pending.bounds);
     this.past.push({
       label: pending.label,
       layerId: pending.layerId,
-      rect: pending.rect,
-      before: pending.before,
-      after: pending.after,
+      rect: pending.bounds,
+      before,
+      after,
     });
     // 新操作让「重做」失效
     this.future.length = 0;

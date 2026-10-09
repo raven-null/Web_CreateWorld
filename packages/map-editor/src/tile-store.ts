@@ -327,27 +327,53 @@ export class RasterTileStore {
 
   /**
    * 把某个像素矩形的数据复制出来（用于历史记录）。
+   *
+   * 越界的部分返回 0（透明）：历史栈按 256 网格分块取样，
+   * 白板尺寸不是 256 整数倍时块会伸到界外。
+   *
    * @param rect 矩形
    * @returns 行优先的索引副本
    */
   readRect(rect: PixelRect): Uint8Array {
     const out = new Uint8Array(rect.width * rect.height);
     for (let row = 0; row < rect.height; row += 1) {
-      const sourceStart = (rect.y + row) * this.width + rect.x;
-      out.set(this.indices.subarray(sourceStart, sourceStart + rect.width), row * rect.width);
+      const sourceY = rect.y + row;
+      if (sourceY < 0 || sourceY >= this.height) {
+        continue;
+      }
+      for (let col = 0; col < rect.width; col += 1) {
+        const sourceX = rect.x + col;
+        if (sourceX < 0 || sourceX >= this.width) {
+          continue;
+        }
+        out[row * rect.width + col] = this.indices[sourceY * this.width + sourceX] ?? 0;
+      }
     }
     return out;
   }
 
   /**
    * 把数据写回某个像素矩形（撤销 / 重做时用）。
+   * 越界的部分直接忽略（与 `readRect` 的补零约定对称）。
    * @param rect 矩形
    * @param data 行优先的索引数据
    */
   writeRect(rect: PixelRect, data: Uint8Array): void {
     for (let row = 0; row < rect.height; row += 1) {
-      const targetStart = (rect.y + row) * this.width + rect.x;
-      this.indices.set(data.subarray(row * rect.width, (row + 1) * rect.width), targetStart);
+      const targetY = rect.y + row;
+      if (targetY < 0 || targetY >= this.height) {
+        continue;
+      }
+      const sourceStart = row * rect.width;
+      const firstCol = Math.max(0, -rect.x);
+      const lastCol = Math.min(rect.width, this.width - rect.x);
+      if (lastCol <= firstCol) {
+        continue;
+      }
+      this.indices.set(
+        data.subarray(sourceStart + firstCol, sourceStart + lastCol),
+        targetY * this.width + rect.x + firstCol,
+      );
     }
     this.markDirty(rect);
   }

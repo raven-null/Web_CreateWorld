@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 绘制内核测试：笔刷几何、撤销栈、瓦片仓库。
  *
  * 这些是「能画」的核心逻辑，与 DOM 无关，因此可以完整单测；
@@ -162,17 +162,35 @@ describe("笔刷几何", () => {
 describe("撤销栈", () => {
   it("一次笔画合并为一步，可撤销可重做", () => {
     const history = new HistoryStack();
+    // 6×6 的「画布」：reader 从它身上按矩形取像素，模拟真实仓库
+    const canvas = new Uint8Array(36);
+    const reader = (rect: { x: number; y: number; width: number; height: number }): Uint8Array => {
+      const out = new Uint8Array(rect.width * rect.height);
+      for (let row = 0; row < rect.height; row += 1) {
+        for (let col = 0; col < rect.width; col += 1) {
+          out[row * rect.width + col] = canvas[(rect.y + row) * 6 + rect.x + col] ?? 0;
+        }
+      }
+      return out;
+    };
+
     history.begin("笔刷");
-    history.record("terrain", { x: 1, y: 1, width: 2, height: 2 }, new Uint8Array(4), new Uint8Array(4).fill(3));
-    history.record("terrain", { x: 3, y: 3, width: 2, height: 2 }, new Uint8Array(4), new Uint8Array(4).fill(3));
-    history.commit();
+    // 两个落点都在落笔前记录（模拟 pointerdown 与补点）：before 应全是空白
+    history.record("terrain", { x: 1, y: 1, width: 2, height: 2 }, reader);
+    history.record("terrain", { x: 3, y: 3, width: 2, height: 2 }, reader);
+    canvas.fill(3); // 笔画实际写入
+    history.commit(reader);
 
     expect(history.undoCount).toBe(1);
     expect(history.redoCount).toBe(0);
 
     const entry = history.peekUndo();
-    expect(entry?.before[0]).toBe(0);
-    expect(entry?.after[0]).toBe(3);
+    // 外接矩形覆盖两个落点：x 1→5，y 1→5
+    expect(entry?.rect).toEqual({ x: 1, y: 1, width: 4, height: 4 });
+    // before 是落笔前的空白，after 是结束时刻的真实内容
+    expect(Array.from(entry?.before ?? [])).toEqual(new Array(16).fill(0));
+    expect(Array.from(entry?.after ?? [])).toEqual(new Array(16).fill(3));
+
     history.confirmUndo();
     expect(history.undoCount).toBe(0);
     expect(history.redoCount).toBe(1);
@@ -190,24 +208,28 @@ describe("撤销栈", () => {
 
   it("新操作会清空重做栈", () => {
     const history = new HistoryStack();
+    const reader = (rect: { width: number; height: number }): Uint8Array =>
+      new Uint8Array(rect.width * rect.height);
     history.begin("a");
-    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(1));
-    history.commit();
+    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, reader);
+    history.commit(reader);
     history.confirmUndo();
     expect(history.redoCount).toBe(1);
 
     history.begin("b");
-    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(2));
-    history.commit();
+    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, reader);
+    history.commit(reader);
     expect(history.redoCount).toBe(0);
   });
 
   it("超过深度上限时丢弃最旧的一步", () => {
     const history = new HistoryStack(3);
+    const reader = (rect: { width: number; height: number }): Uint8Array =>
+      new Uint8Array(rect.width * rect.height);
     for (let i = 0; i < 5; i += 1) {
       history.begin(`step-${i}`);
-      history.record("terrain", { x: i, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(i + 1));
-      history.commit();
+      history.record("terrain", { x: i, y: 0, width: 1, height: 1 }, reader);
+      history.commit(reader);
     }
     expect(history.undoCount).toBe(3);
   });

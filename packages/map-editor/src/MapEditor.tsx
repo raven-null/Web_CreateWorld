@@ -778,11 +778,11 @@ export function MapEditor(props: MapEditorProps) {
           : currentBrush.tool === "eraser"
             ? 0
             : currentBrush.terrainIndex;
-      const before = store.readRect(rect);
+      // 历史记录自己负责读取「改动前」的像素（必须在 paintRect 之前），
+      // 并在一次笔画结束（commit）时统一读取整条笔画的结束状态。
+      const reader = (target: PixelRect): Uint8Array => store.readRect(target);
+      historyRef.current.record(activeLayerIdRef.current ?? "", rect, reader);
       paintRect(store.indices, store.width, rect, value);
-      const after = store.readRect(rect);
-
-      historyRef.current.record(activeLayerIdRef.current ?? "", rect, before, after);
       store.markDirty(rect);
       refreshOffscreen(outerRect(rect, store.width, store.height));
       // 多图层：统计所有图层的待保存量，而不是只看当前层
@@ -1429,7 +1429,10 @@ export function MapEditor(props: MapEditorProps) {
         paintingRef.current = false;
         erasingRef.current = false;
         lastPaintRef.current = null;
-        historyRef.current.commit();
+        // 结束状态在笔画真正结束时读取：整条笔画覆盖的矩形一次快照，
+        // 撤销 / 重做才能整笔回退（只记最后一个落点会「撤销了却看不出变化」）
+        const strokeStore = storeRef.current;
+        historyRef.current.commit(strokeStore ? (rect) => strokeStore.readRect(rect) : undefined);
         setHistoryTick((tick) => tick + 1);
         scheduleAutoSave();
         // 笔画结束才写本地草稿：一次笔画几百个采样点，逐点写没有意义
