@@ -172,6 +172,16 @@ export interface MapEditorProps {
   /** 初始视图：经纬度中心 + 缩放 */
   initialView?: { lon: number; lat: number; zoom: number };
   theme?: Partial<MapEditorTheme>;
+  /**
+   * 纸张素材地址（可选）：手绘图案模式下的纸张底色贴图，由宿主的资源管线提供。
+   *
+   * 为什么用 URL 而不是让插件自己去找文件：插件本体不允许发网络请求（边界规则第 3 条），
+   * 素材应被宿主打包进产物、或由 CDN 托管后把地址传进来。
+   * 不传时插件用内置的程序化暗纸；地址失效时自动退回内置版本（不会白屏）。
+   */
+  paperTextureUrl?: string;
+  /** 纸张平铺单元边长（默认 512）：越大重复感越弱、显存占用越高 */
+  paperTextureTileSize?: number;
   locale?: "zh-CN" | "en";
   features?: MapEditorFeatures;
   onSaveStateChange?: (state: SaveState) => void;

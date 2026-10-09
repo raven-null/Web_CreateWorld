@@ -49,7 +49,14 @@ import { LayerPanel } from "./panels/LayerPanel";
 import { MarkerStore, type CanvasMarker } from "./marker-store";
 import { computeRasterStats, measurePolyline, type MeasureResult, type RasterStats } from "./measure";
 import { describeResize, normalizeBoardWidth, resampleNearest } from "./resize";
-import { bakeHandDrawnLayer, createPaperTexture, PAPER_BASE, type RenderStyleMode } from "./terrain-render";
+import {
+  applyPaperTexture,
+  bakeHandDrawnLayer,
+  currentPaperTexture,
+  paperBaseColor,
+  paperIsLight,
+  type RenderStyleMode,
+} from "./terrain-render";
 import { RasterTileStore, TILE_SIZE, tileRangeOf, type PixelRect } from "./tile-store";
 import { resolveTheme, themeToCssVars } from "./theme";
 
@@ -79,7 +86,7 @@ interface Viewport {
  * @returns 编辑器节点
  */
 export function MapEditor(props: MapEditorProps) {
-  const { mapId, adapter, readOnly = false } = props;
+  const { mapId, adapter, readOnly = false, paperTextureUrl } = props;
   const theme = useMemo(() => resolveTheme(props.theme), [props.theme]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -153,6 +160,11 @@ export function MapEditor(props: MapEditorProps) {
   const [fullscreen, setFullscreen] = useState(false);
   /** 渲染风格：简约色块 / 手绘图案（方案 §8 的观感取向） */
   const [renderStyle, setRenderStyle] = useState<RenderStyleMode>("handdrawn");
+  /**
+   * 当前纸张是不是亮纸（宿主提供羊皮纸这类浅色素材时为 true）。
+   * 画布上的比例尺与测量读数要按它反着配色，否则亮底配浅字看不清。
+   */
+  const [paperLight, setPaperLight] = useState(false);
   /** 白板改尺寸面板与输入 */
   const [resizeOpen, setResizeOpen] = useState(false);
   const [resizeWidth, setResizeWidth] = useState(2048);
@@ -182,6 +194,36 @@ export function MapEditor(props: MapEditorProps) {
   metaRef.current = meta;
   radiusKmRef.current = radiusKm;
   renderStyleRef.current = renderStyle;
+
+  /**
+   * 加载宿主提供的纸张素材（羊皮纸等）。
+   *
+   * 三件事必须一起做，否则会出现「换了纸但画面没换」的假成功：
+   * ① 把贴图设为当前纸张；② 丢掉所有手绘位图缓存（它们烘的是旧纸）；
+   * ③ 记住纸张明暗，供画布上的比例尺 / 读数反色。
+   *
+   * 加载失败时静默保留内置纸张：纸张只是观感，不该让编辑器白屏或弹错。
+   */
+  useEffect(() => {
+    if (!paperTextureUrl) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const tile = await applyPaperTexture(paperTextureUrl, props.paperTextureTileSize);
+      if (cancelled || !tile) {
+        return;
+      }
+      layerStoreRef.current?.invalidateHandDrawn();
+      layerStoreRef.current?.redrawAllRenderBitmaps();
+      setPaperLight(paperIsLight());
+      setHistoryTick((tick) => tick + 1);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paperTextureUrl, props.paperTextureTileSize, meta]);
 
   /**
    * 更新光标处的尺度读数（经纬度、每像素实距、横向变形倍率）。
@@ -393,6 +435,8 @@ export function MapEditor(props: MapEditorProps) {
     setRenderStyle(next);
     layerStore?.setStyleMode(next);
     layerStore?.redrawAllRenderBitmaps();
+    // 纸张明暗只影响手绘模式下画布标注的配色，切换风格时同步一次
+    setPaperLight(paperIsLight());
     setHistoryTick((tick) => tick + 1);
   }, []);
 
@@ -572,10 +616,11 @@ export function MapEditor(props: MapEditorProps) {
     const { zoom, offsetX, offsetY } = viewport;
 
     context.save();
-    // 底色：手绘模式下露出的应是纸张色（否则深色底会把手绘画面割裂开）
+    // 底色：手绘模式下白板之外露出的应是纸张色（否则深色底会把手绘画面割裂开）。
+    // 用纸张的代表色而不是常量：宿主换了浅色纸张素材后，四周才不会留一圈深色
     context.fillStyle =
       renderStyleRef.current === "handdrawn" && layerStoreRef.current
-        ? PAPER_BASE
+        ? paperBaseColor()
         : theme.background;
     context.fillRect(0, 0, cssWidth, cssHeight);
 
@@ -586,7 +631,8 @@ export function MapEditor(props: MapEditorProps) {
     }
 
     if (store && zoom >= 0.3) {
-      context.strokeStyle = "rgba(232, 224, 211, 0.10)";
+      // 经纬网线条按纸张明暗反色：羊皮纸这类亮纸上的浅色线是看不见的
+      context.strokeStyle = paperLight ? "rgba(58, 44, 30, 0.22)" : "rgba(232, 224, 211, 0.10)";
       context.lineWidth = 1;
       context.beginPath();
       for (let lon = -180; lon <= 180; lon += GRATICULE_STEP) {
@@ -623,7 +669,8 @@ export function MapEditor(props: MapEditorProps) {
         );
         if (rect) {
           const size = Math.max(2, rect.width * zoom);
-          context.strokeStyle = currentBrush.tool === "picker" ? "#ffffff" : theme.accent;
+          // 吸管的光标在亮纸上要用深色，否则和羊皮纸一个亮度，看不见
+          context.strokeStyle = currentBrush.tool === "picker" || paperLight ? "#3a2c1e" : theme.accent;
           context.lineWidth = 1;
           context.strokeRect((rect.x - offsetX) * zoom, (rect.y - offsetY) * zoom, size, size);
         }
@@ -705,10 +752,10 @@ export function MapEditor(props: MapEditorProps) {
         if (label) {
           context.font = '12px "Source Han Sans SC", "Noto Sans SC", sans-serif';
           const textWidth = context.measureText(label).width;
-          // 背景用纸张色、文字用亮色：浅底浅字会看不清（踩过这个坑）
-          context.fillStyle = `${PAPER_BASE}e6`;
+          // 底板用纸张色、文字按纸张明暗反色：浅底浅字会看不清（踩过这个坑）
+          context.fillStyle = paperLight ? "#f6efdff0" : `${paperBaseColor()}f0`;
           context.fillRect(screen.x + 8, screen.y + 8, textWidth + 10, 18);
-          context.fillStyle = theme.text;
+          context.fillStyle = paperLight ? "#2b2118" : theme.text;
           context.fillText(label, screen.x + 13, screen.y + 21);
         }
       }
@@ -726,19 +773,19 @@ export function MapEditor(props: MapEditorProps) {
         const barHeight = 6;
         const x0 = 12;
         const y0 = cssHeight - 16;
-        // 比例尺条同样用纸张色底 + 亮色文字，保证在暗纸上可读
-        context.fillStyle = `${PAPER_BASE}e6`;
+        // 比例尺条同样用纸张色底 + 按纸张明暗反色的文字，保证在暗纸 / 亮纸上都可读
+        context.fillStyle = paperLight ? "#f6efdff0" : `${paperBaseColor()}f0`;
         context.fillRect(x0 - 4, y0 - barHeight - 10, Math.max(bar.pixels, 40) + 8, barHeight + 10);
         context.fillStyle = theme.accent;
         context.fillRect(x0, y0 - barHeight, bar.pixels, barHeight);
         context.font = '11px "Source Han Sans SC", "Noto Sans SC", sans-serif';
-        context.fillStyle = theme.text;
+        context.fillStyle = paperLight ? "#2b2118" : theme.text;
         context.fillText(formatDistance(bar.kilometers), x0, y0 - barHeight - 2);
       }
     }
 
     context.restore();
-  }, [viewport, theme, meta, historyTick, saveState, markerTick, measurePoints, measurePending, measureResult, radiusKm]);
+  }, [viewport, theme, meta, historyTick, saveState, markerTick, measurePoints, measurePending, measureResult, radiusKm, paperLight]);
 
   /** 屏幕坐标 → 世界像素 */
   const toWorld = useCallback((screenX: number, screenY: number): { x: number; y: number } => {
@@ -998,7 +1045,8 @@ export function MapEditor(props: MapEditorProps) {
         includeScaleBar: true,
         radiusKm,
         styleMode: renderStyleRef.current,
-        paper: createPaperTexture(),
+        // 导出用当前生效的纸张（宿主给了羊皮纸素材时，导出图也该是羊皮纸）
+        paper: currentPaperTexture(),
       });
       const extension = result.mimeType === "image/png" ? "png" : "webp";
       const blob = result.blob;
@@ -1873,7 +1921,9 @@ export function MapEditor(props: MapEditorProps) {
               transform: "translateX(-50%)",
               padding: "5px 12px",
               fontSize: 12,
-              background: `${PAPER_BASE}ee`,
+              // 这是浮在画布上的界面提示，不是纸的一部分：用面板底色 + 边框，
+              // 保证无论纸张素材是深是浅，文字都读得清
+              background: theme.panel,
               border: `1px solid ${theme.accent}`,
               borderRadius: theme.radius,
               color: theme.text,

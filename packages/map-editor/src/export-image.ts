@@ -10,7 +10,7 @@
  */
 import { terrainPaletteToUint32, type TerrainBrush, type TerrainBrush as Palette } from "@worldmap/core";
 import { equatorCircumferenceKm, kilometersPerPixelLon } from "@worldmap/core";
-import { bakeHandDrawnLayer, createPaperTexture } from "./terrain-render";
+import { bakeHandDrawnLayer, currentPaperTexture } from "./terrain-render";
 
 /** 单文件体积上限（与主站图片接口一致：8MB） */
 export const MAX_EXPORT_BYTES = 8 * 1024 * 1024;
@@ -79,7 +79,7 @@ export async function exportBoardImage(options: ExportImageOptions): Promise<Exp
       options.width,
       options.height,
       options.palette,
-      options.paper ?? createPaperTexture(),
+      options.paper ?? currentPaperTexture(),
     );
     context.imageSmoothingEnabled = scale < 1;
     context.drawImage(baked, 0, 0, width, height);

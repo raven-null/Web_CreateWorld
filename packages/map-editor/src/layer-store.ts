@@ -11,7 +11,7 @@
  */
 import type { MapHostAdapter, MapLayer, TerrainBrush } from "@worldmap/core";
 import { terrainPaletteToUint32 } from "@worldmap/core";
-import { bakeHandDrawnLayer, bakeRegionInto, createPaperTexture, PAPER_BASE, type RenderStyleMode } from "./terrain-render";
+import { bakeHandDrawnLayer, bakeRegionInto, currentPaperTexture, PAPER_BASE, type RenderStyleMode } from "./terrain-render";
 import { DECORATION_CELL_PX } from "./terrain-style";
 import {
   RasterTileStore,
@@ -393,8 +393,6 @@ export class MapLayerStore {
   private readonly bitmaps = new Map<string, HTMLCanvasElement>();
   /** 手绘风格位图缓存：layerId → canvas（模式为 handdrawn 时用） */
   private readonly handDrawnBitmaps = new Map<string, HTMLCanvasElement>();
-  /** 纸张贴图（所有图层共用一张，平铺） */
-  private paperTexture: HTMLCanvasElement | null = null;
   /** 当前渲染模式 */
   private styleMode: RenderStyleMode = "flat";
 
@@ -420,10 +418,7 @@ export class MapLayerStore {
 
   /** 取纸张贴图（惰性创建，全部图层共用） */
   private paper(): HTMLCanvasElement {
-    if (!this.paperTexture) {
-      this.paperTexture = createPaperTexture();
-    }
-    return this.paperTexture;
+    return currentPaperTexture();
   }
 
   /**
@@ -494,6 +489,16 @@ export class MapLayerStore {
   }
 
   /**
+   * 让所有手绘位图缓存失效（换纸张素材后必须调用）。
+   *
+   * 手绘位图是把「纸张 + 图案 + 描边 + 装饰」整幅烘出来的，
+   * 纸张换了但缓存还在，画面就会继续显示旧纸张——所以必须整批丢掉重烘。
+   */
+  invalidateHandDrawn(): void {
+    this.handDrawnBitmaps.clear();
+  }
+
+  /**
    * 局部重烘手绘位图的某块区域。
    * @param layerId 图层 id
    * @param rect 世界像素矩形
@@ -518,10 +523,12 @@ export class MapLayerStore {
     if (region.width === 0 || region.height === 0) {
       return;
     }
-    // 先清掉该区域（露出纸张色），再重烘：否则旧图案会残留
-    context.fillStyle = PAPER_BASE;
+    // 先清掉该区域（重新铺纸张），再重烘：否则旧图案会残留。
+    // 用纸张贴图而不是常量色：宿主换了纸张素材后，这块底色也要跟着换
+    const paper = this.paper();
+    context.fillStyle = context.createPattern(paper, "repeat") ?? PAPER_BASE;
     context.fillRect(region.x, region.y, region.width, region.height);
-    bakeRegionInto(context, store.indices, store.width, store.height, region, store.palette, this.paper());
+    bakeRegionInto(context, store.indices, store.width, store.height, region, store.palette, paper);
   }
 }
 

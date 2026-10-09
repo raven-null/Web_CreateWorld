@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { MapEditor } from "@worldmap/editor";
 import { createHttpMapHostAdapter, createIndexedDbDraftStore } from "@worldmap/editor-web";
+import parchmentUrl from "../../../../packages/map-editor/assets/terrain/paper/parchment.jpg";
 import { api } from "../lib/api";
 import { uploadImage } from "../lib/image-upload";
 import { showToast } from "../lib/toast";
@@ -201,6 +202,8 @@ export default function MapsPage() {
           mapId={activeMap.id}
           adapter={adapter}
           drafts={drafts}
+          // 纸张素材由宿主打包并给地址：插件本体不允许自己去取素材（边界规则第 3 条）
+          paperTextureUrl={parchmentUrl}
           onError={(err) => showToast("error", err.message)}
         />
       )}

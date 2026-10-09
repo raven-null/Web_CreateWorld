@@ -60,22 +60,28 @@
 
 | 文件 | 用途 | 来源 / 许可 | 引入日期 |
 | --- | --- | --- | --- |
-| （暂无） | | | |
+| `terrain/paper/parchment.jpg` | **手绘图案模式的纸张底色**（512×512 平铺单元，35KB）：由原图裁成正方形 + 镜像拼贴做成四边无缝，主站通过 `paperTextureUrl` 传入 | 用户提供（自有） | 2026-10-09 |
+| `terrain/paper/parchment-source.jpg` | 原档（1440×1080，未处理），改素材时从这里重新导出 | 用户提供（自有） | 2026-10-09 |
+| `terrain/paper/parchment-tiled.jpg` | 镜像拼贴效果预览（2×2），只用来肉眼确认四边无缝，不参与运行 | 由上一项生成 | 2026-10-09 |
 
 ## 怎么在代码里引用
 
 素材**不参与 TypeScript 类型检查**，引用方式推荐交给构建工具解析 URL：
 
 ```ts
-// 让打包器把素材复制到产物里，并给出最终地址（对本仓库的 Vite 构建有效）
-const url = new URL("../assets/terrain/tiles/forest.png", import.meta.url).href;
-const image = new Image();
-image.src = url;
+// 宿主（apps/web）这边导入，拿到打包后的地址，再作为 props 传进插件
+import parchmentUrl from "../../../../packages/map-editor/assets/terrain/paper/parchment.jpg";
+
+<MapEditor adapter={adapter} mapId={id} paperTextureUrl={parchmentUrl} />
 ```
 
 注意事项：
-- 插件本体（`@worldmap/editor`）**不做网络请求**（CI 边界规则第 3 条），
-  素材要么被构建进包、要么由宿主以 URL 注入，不要在插件里 `fetch` 素材
+- 插件本体（`@worldmap/editor`）**不做网络请求**（CI 边界规则第 3 条）：
+  素材由宿主打包进产物、把地址经 `paperTextureUrl` 传进来；
+  插件内用 `Image` 加载（浏览器自己取图，不算 `fetch`）
 - 生成类素材（如程序化图案）优先写成代码，只有「画不出来 / 画出来太慢」的才落地成文件：
   现在的七种地形图案就是程序化生成的，好处是零体积、可随调色板变色
-- 加载失败必须能降级：纹理缺失时退回纯色填充，不能让整个编辑器白屏
+- 加载失败必须能降级：纹理缺失时退回内置纸张，不能让整个编辑器白屏
+  （`applyPaperTexture()` 失败时返回 `null`，调用方静默保留原纸张）
+- **平铺素材不能直接平铺**：普通照片四边颜色对不上，铺开会有明显网格接缝；
+  用 `createSeamlessTile()` 做镜像拼贴后再用（`applyPaperTexture()` 已经内置这一步）

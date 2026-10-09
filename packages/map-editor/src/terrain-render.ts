@@ -28,16 +28,27 @@ const PATTERN_CELL_PX = 32;
  * 结果"底色亮 + 界面文字浅"两边都看不清——纸的质感应当来自**纹理与装饰**，
  * 而不是靠亮底色。因此纸张取暗暖色：与深色 UI 和谐，
  * 地形色（海洋的深蓝、草地的绿、雪地的白）在它上面反而更清楚。
+ *
+ * 宿主可以提供真实的纸张素材（`paperTextureUrl`）替换它，见 `applyPaperTexture()`。
  */
 export const PAPER_BASE = "#241f18";
 /** 噪点与污渍强度（暗底上要略强一点才看得出纸的质感） */
 const PAPER_NOISE_ALPHA = 0.07;
 
+/** 外部纸张贴图的默认边长：512 既够细，显存占用也可控（整幅白板只有它一份） */
+export const PAPER_TILE_SIZE = 512;
+
+/** 当前生效的纸张贴图（null 表示还没人设置，按需生成程序化版本） */
+let paperTexture: HTMLCanvasElement | null = null;
+
+/** 纸张代表色缓存（贴图换了要清掉） */
+let paperBaseCache: string | null = null;
+
 /** 渲染模式 */
 export type RenderStyleMode = "flat" | "handdrawn";
 
 /**
- * 生成纸张质感贴图（米色底 + 细噪点 + 轻微污渍）。
+ * 生成纸张质感贴图（暗底 + 细噪点 + 轻微污渍）。
  *
  * 尺寸取 256×256 并平铺：噪点是均匀随机的，平铺不会看出接缝，
  * 但比整幅绘制省内存也省时间。
@@ -81,6 +92,170 @@ export function createPaperTexture(size = 256): HTMLCanvasElement {
     context.fill();
   }
   return canvas;
+}
+
+/**
+ * 取当前纸张贴图（惰性生成：没设置过外部素材时用程序化版本）。
+ * @returns 纸张贴图画布
+ */
+export function currentPaperTexture(): HTMLCanvasElement {
+  if (!paperTexture) {
+    paperTexture = createPaperTexture();
+  }
+  return paperTexture;
+}
+
+/**
+ * 把一张图片做成**四边无缝**的平铺贴图。
+ *
+ * 为什么不能直接平铺：素材通常是一张普通照片 / 纹理图，四边颜色对不上，
+ * 平铺后会出现明显的网格接缝（地图上一眼就能看出格线）。
+ * 做法是「镜像拼贴」——把 2×2 拼块里右半与下半取镜像，
+ * 于是拼块四条边两侧的颜色天然一致，接缝消失；代价是出现镜像对称，
+ * 对羊皮纸这类有机纹理几乎看不出重复。
+ *
+ * @param source 已解码完成的图片（HTMLImageElement / ImageBitmap 均可）
+ * @param size 输出边长
+ * @returns 可无缝平铺的画布
+ */
+export function createSeamlessTile(
+  source: CanvasImageSource & { width: number; height: number },
+  size = PAPER_TILE_SIZE,
+): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return canvas;
+  }
+
+  // 源图先按「居中正方形」取景，再缩放；否则宽高比不同会把纹理拉变形
+  const side = Math.min(source.width, source.height);
+  const sx = (source.width - side) / 2;
+  const sy = (source.height - side) / 2;
+
+  // 四象限镜像：每块都是同一份正方形区域的翻转版本
+  const half = size / 2;
+  const draw = (dx: number, dy: number, flipX: boolean, flipY: boolean): void => {
+    context.save();
+    context.translate(dx + (flipX ? half : 0), dy + (flipY ? half : 0));
+    context.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+    context.drawImage(source, sx, sy, side, side, 0, 0, half, half);
+    context.restore();
+  };
+  draw(0, 0, false, false);
+  draw(half, 0, true, false);
+  draw(0, half, false, true);
+  draw(half, half, true, true);
+  return canvas;
+}
+
+/**
+ * 加载宿主提供的纸张素材并设为当前贴图。
+ *
+ * 失败（地址无效、格式不支持、图片损坏）时**保留原贴图**并返回 null：
+ * 纸张只是观感，不能因为一张图挂了就让编辑器白屏。
+ *
+ * @param url 图片地址（由宿主的资源管线产出）
+ * @param size 平铺单元边长
+ * @returns 加载成功返回贴图画布；失败返回 null
+ */
+export async function applyPaperTexture(url: string, size = PAPER_TILE_SIZE): Promise<HTMLCanvasElement | null> {
+  try {
+    const image = await loadImage(url);
+    const tile = createSeamlessTile(image, size);
+    paperTexture = tile;
+    paperBaseCache = null; // 代表色随贴图失效
+    return tile;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 取纸张的代表色（整张贴图的中位色）。
+ *
+ * 用途：手绘模式下白板之外的画布区域、以及导出图片的留白，都要用纸张色兜底，
+ * 否则换了浅色素材（羊皮纸）后四周会留一圈深色，看着像画面被裁掉了一块。
+ * 用中位色而不是底色常量，是为了「宿主换了纸张，兜底色也跟着换」。
+ *
+ * @returns CSS 颜色字符串
+ */
+export function paperBaseColor(): string {
+  if (paperBaseCache) {
+    return paperBaseCache;
+  }
+  const tile = currentPaperTexture();
+  const context = tile.getContext("2d");
+  if (!context || tile.width === 0 || tile.height === 0) {
+    return PAPER_BASE;
+  }
+  const { data } = context.getImageData(0, 0, tile.width, tile.height);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += 64) {
+    r += data[i] ?? 0;
+    g += data[i + 1] ?? 0;
+    b += data[i + 2] ?? 0;
+    count += 1;
+  }
+  if (count === 0) {
+    return PAPER_BASE;
+  }
+  paperBaseCache = `rgb(${Math.round(r / count)}, ${Math.round(g / count)}, ${Math.round(b / count)})`;
+  return paperBaseCache;
+}
+
+/**
+ * 判断纸张是不是「亮纸」。
+ *
+ * 用途：画布上的比例尺、测量读数要按纸张明暗反着配色——
+ * 亮纸（如羊皮纸）配深色文字、暗纸配浅色文字。
+ * 曾把亮纸配浅色文字，结果"背景亮 + 字体浅"，根本看不清。
+ *
+ * @returns 平均亮度 > 0.62 时返回 true（阈值取「浅米色」一侧）
+ */
+export function paperIsLight(): boolean {
+  const tile = currentPaperTexture();
+  const context = tile.getContext("2d");
+  if (!context || tile.width === 0 || tile.height === 0) {
+    return false;
+  }
+  const { data } = context.getImageData(0, 0, tile.width, tile.height);
+  let total = 0;
+  let count = 0;
+  // 隔 16 个像素采样一次即可，不必逐点算（这里只做观感判断）
+  for (let i = 0; i < data.length; i += 64) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    total += (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    count += 1;
+  }
+  return count > 0 && total / count > 0.62;
+}
+
+/**
+ * 加载并解码一张图片（纸张素材用）。
+ *
+ * 用 `Image` 而不是 `fetch` + `createImageBitmap`：插件本体不允许发网络请求
+ * （CI 边界规则第 3 条），图片地址由宿主的资源管线给出，浏览器自己取图。
+ *
+ * @param url 图片地址
+ * @returns 解码完成的图片
+ */
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    // 同域素材不需要匿名跨域；加了也能兼容 CDN 场景
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`纸张素材加载失败：${url}`));
+    image.src = url;
+  });
 }
 
 /**
