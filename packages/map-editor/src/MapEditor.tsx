@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_TERRAIN_PALETTE,
   deformFactor,
+  encodeTile,
   formatArea,
   formatDistance,
   kilometersPerPixelLon,
@@ -26,8 +27,10 @@ import {
   type MapEditorProps,
   type MapEditorTheme,
   type MapMeta,
+  type MapLayer,
   type SaveState,
   type TerrainBrush,
+  type Tile,
 } from "@worldmap/core";
 import {
   DEFAULT_BRUSH,
@@ -42,8 +45,11 @@ import {
 } from "./brush-engine";
 import { HistoryStack } from "./history";
 import { exportBoardImage, downloadBlob } from "./export-image";
+import { MapLayerStore } from "./layer-store";
+import { LayerPanel } from "./panels/LayerPanel";
 import { MarkerStore, type CanvasMarker } from "./marker-store";
 import { computeRasterStats, measurePolyline, type MeasureResult, type RasterStats } from "./measure";
+import { describeResize, normalizeBoardWidth, resampleNearest } from "./resize";
 import { RasterTileStore, TILE_SIZE, tileRangeOf, type PixelRect } from "./tile-store";
 import { resolveTheme, themeToCssVars } from "./theme";
 
@@ -81,8 +87,13 @@ export function MapEditor(props: MapEditorProps) {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const offscreenRef = useRef<HTMLCanvasElement | null>(null);
-  const storeRef = useRef<RasterTileStore | null>(null);
+  /** 图层门面：管理全部栅格图层（每层一份栅格 + 脏瓦片 + 离屏位图） */
+  const layerStoreRef = useRef<MapLayerStore | null>(null);
+  /** 图层面板所需的 React 状态（图层列表与当前图层） */
+  const [layerList, setLayerList] = useState<MapLayer[]>([]);
+  const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
+  /** 当前图层的 ref 镜像（绘制 / 撤销等回调里读，避免闭包过期） */
+  const activeLayerIdStateRef = useRef<string | null>(null);
   const markerStoreRef = useRef<MarkerStore | null>(null);
   const historyRef = useRef(new HistoryStack());
   const viewportRef = useRef<Viewport>({ zoom: 1, offsetX: 0, offsetY: 0 });
@@ -108,6 +119,8 @@ export function MapEditor(props: MapEditorProps) {
   const [historyTick, setHistoryTick] = useState(0);
   const [palette, setPalette] = useState<TerrainBrush[]>(DEFAULT_TERRAIN_PALETTE);
   const [panelOpen, setPanelOpen] = useState(false);
+  /** 图层面板开关 */
+  const [layerPanelOpen, setLayerPanelOpen] = useState(false);
   const [markerMode, setMarkerMode] = useState(false);
   const [pendingMarker, setPendingMarker] = useState<{ x: number; y: number } | null>(null);
   const [markerLabel, setMarkerLabel] = useState("");
@@ -132,6 +145,10 @@ export function MapEditor(props: MapEditorProps) {
   const [statsOpen, setStatsOpen] = useState(false);
   const [radiusOpen, setRadiusOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  /** 白板改尺寸面板与输入 */
+  const [resizeOpen, setResizeOpen] = useState(false);
+  const [resizeWidth, setResizeWidth] = useState(2048);
+  const [resizing, setResizing] = useState(false);
   /** 光标处的尺度读数 */
   const [readout, setReadout] = useState<{
     lat: number;
@@ -142,6 +159,13 @@ export function MapEditor(props: MapEditorProps) {
   const readoutRef = useRef<{ lat: number; lon: number; kmPerPixel: number; deform: number } | null>(null);
   /** 半径的最新值（给不随半径重建的回调读） */
   const radiusKmRef = useRef(6371);
+  /**
+   * 当前正在绘制的栅格图层 id（由图层面板切换）。
+   * 绘制、撤销、吸管都以它为准；`MapLayerStore` 负责多图层的实际读写。
+   */
+  const activeLayerIdRef = useRef<string | null>(null);
+  /** 当前图层的数据仓库（单图层读写的快捷入口，随当前图层变化） */
+  const storeRef = useRef<RasterTileStore | null>(null);
 
   viewportRef.current = viewport;
   brushRef.current = brush;
@@ -203,22 +227,31 @@ export function MapEditor(props: MapEditorProps) {
           setPalette(result.palette);
         }
         setRadiusKm(result.board.radiusKm);
+        setResizeWidth(result.board.width);
 
         const rasterLayer = result.layers.find((layer) => layer.storage === "raster");
         if (rasterLayer) {
-          const store = new RasterTileStore({
+          const layerStore = new MapLayerStore({
             adapter,
             mapId,
-            layerId: rasterLayer.id,
             width: result.board.width,
             height: result.board.height,
+            layers: result.layers,
+            revision: result.revision,
             palette: result.palette,
           });
-          await store.load();
+          await layerStore.load();
           if (cancelled) {
             return;
           }
-          storeRef.current = store;
+          layerStoreRef.current = layerStore;
+          layerStore.redrawAllBitmaps();
+          const firstLayer = layerStore.rasterLayers()[0] ?? null;
+          activeLayerIdRef.current = firstLayer?.id ?? null;
+          activeLayerIdStateRef.current = firstLayer?.id ?? null;
+          setLayerList(layerStore.layers);
+          setActiveLayerId(firstLayer?.id ?? null);
+          storeRef.current = firstLayer ? layerStore.storeOf(firstLayer.id) : null;
           historyRef.current.clear();
           setDirtyCount(0);
         }
@@ -307,89 +340,81 @@ export function MapEditor(props: MapEditorProps) {
     return () => observer.disconnect();
   }, []);
 
-  /** 重建离屏底图（仅在栅格整体变化时调用：初次载入、撤销重做后） */
+  /**
+   * 整体重画所有图层的离屏位图（初次载入、撤销重做、图层显隐变化后调用）。
+   * 多图层下不再有「唯一底图」，每个栅格图层各有一块位图。
+   */
   const rebuildOffscreen = useCallback((): void => {
-    const store = storeRef.current;
-    const metaValue = metaRef.current;
-    if (!store || !metaValue) {
-      return;
-    }
-    let canvas = offscreenRef.current;
-    if (!canvas) {
-      canvas = document.createElement("canvas");
-      offscreenRef.current = canvas;
-    }
-    canvas.width = store.width;
-    canvas.height = store.height;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return;
-    }
-    const imageData = buildImageData(store.indices, 0, 0, store.width, store.height, store.width);
-    context.putImageData(imageData, 0, 0);
+    layerStoreRef.current?.redrawAllBitmaps();
   }, []);
 
   /**
-   * 局部更新离屏底图（一次落笔后只重画受影响的矩形）。
+   * 局部更新当前图层的离屏位图（一次落笔后只重画受影响的矩形）。
    * @param rect 世界像素矩形
    */
   const refreshOffscreen = useCallback((rect: PixelRect): void => {
-    const store = storeRef.current;
-    const canvas = offscreenRef.current;
-    if (!store || !canvas) {
+    const layerStore = layerStoreRef.current;
+    const layerId = activeLayerIdRef.current;
+    if (!layerStore || !layerId) {
       return;
     }
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return;
-    }
-    const imageData = buildImageData(store.indices, rect.x, rect.y, rect.width, rect.height, store.width);
-    context.putImageData(imageData, rect.x, rect.y);
+    layerStore.refreshBitmap(layerId, rect);
   }, []);
 
-  /** 主动保存（把脏瓦片提交给宿主） */
+  /** 主动保存（把各图层的脏瓦片按层分批提交给宿主） */
   const saveNow = useCallback(async (): Promise<void> => {
-    const store = storeRef.current;
+    const layerStore = layerStoreRef.current;
     const metaValue = metaRef.current;
-    if (!store || !metaValue || readOnly) {
+    if (!layerStore || !metaValue || readOnly) {
       return;
     }
-    if (store.dirtyCount === 0) {
+    if (layerStore.totalDirtyCount() === 0) {
       setSaveState("saved");
-      return;
-    }
-    const layerId = metaValue.layers.find((layer) => layer.storage === "raster")?.id;
-    if (!layerId) {
       return;
     }
 
     setSaveState("saving");
-    const tiles = await store.takeDirtyTiles();
-    if (tiles.length === 0) {
+    const groups = await layerStore.takeAllDirtyTiles();
+    const totalTiles = groups.reduce((sum, group) => sum + group.tiles.length, 0);
+    if (totalTiles === 0) {
       // 脏瓦片其实与服务器端一致（例如涂了又擦回），直接收工
-      store.clearDirtyAsBaseline();
-      setDirtyCount(store.dirtyCount);
+      for (const layerId of layerStore.rasterLayers().map((layer) => layer.id)) {
+        layerStore.storeOf(layerId)?.clearDirtyAsBaseline();
+      }
+      setDirtyCount(0);
       setSaveState("saved");
       return;
     }
 
     try {
       let revision = metaValue.revision;
-      for (let i = 0; i < tiles.length; i += MAX_TILES_PER_SAVE) {
-        const chunk = tiles.slice(i, i + MAX_TILES_PER_SAVE);
-        let result = await adapter.saveTiles({ mapId, layerId, tiles: chunk, revision });
-        if (result.conflict) {
-          // 版本冲突：用服务端最新版本重试一次，避免刚画的改动白费
-          result = await adapter.saveTiles({ mapId, layerId, tiles: chunk, revision: result.revision });
+      for (const group of groups) {
+        for (let i = 0; i < group.tiles.length; i += MAX_TILES_PER_SAVE) {
+          const chunk = group.tiles.slice(i, i + MAX_TILES_PER_SAVE);
+          let result = await adapter.saveTiles({
+            mapId,
+            layerId: group.layerId,
+            tiles: chunk,
+            revision,
+          });
           if (result.conflict) {
-            throw new Error("地图已在别处被修改，请重新加载后再画");
+            // 版本冲突：用服务端最新版本重试一次，避免刚画的改动白费
+            result = await adapter.saveTiles({
+              mapId,
+              layerId: group.layerId,
+              tiles: chunk,
+              revision: result.revision,
+            });
+            if (result.conflict) {
+              throw new Error("地图已在别处被修改，请重新加载后再画");
+            }
           }
+          revision = result.revision;
+          // 只有真正保存成功才更新基线
+          layerStore.storeOf(group.layerId)?.commitBaseline(chunk.map((tile) => tile.coord));
         }
-        revision = result.revision;
-        // 只有真正保存成功才更新基线
-        store.commitBaseline(chunk.map((tile) => tile.coord));
       }
-      setDirtyCount(store.dirtyCount);
+      setDirtyCount(layerStore.totalDirtyCount());
       setMeta((current) => (current ? { ...current, revision } : current));
       if (metaRef.current) {
         metaRef.current = { ...metaRef.current, revision };
@@ -408,7 +433,7 @@ export function MapEditor(props: MapEditorProps) {
       props.onDirtyChange?.(false);
     } catch (err) {
       // 保存失败：瓦片仍是脏的，不丢本地内容
-      setDirtyCount(store.dirtyCount);
+      setDirtyCount(layerStore.totalDirtyCount());
       setSaveState("error");
       props.onSaveStateChange?.("error");
       props.onError?.(err as Error);
@@ -450,18 +475,23 @@ export function MapEditor(props: MapEditorProps) {
     }, 1000);
   }, [readOnly]);
 
-  /** 每次依赖变化时重建「取草稿瓦片」的实现 */
+  /** 每次依赖变化时重建「取草稿瓦片」的实现（逐图层收集） */
   useEffect(() => {
     const drafts = props.drafts;
-    const metaValue = meta;
-    const store = storeRef.current;
-    const rasterLayerId = metaValue?.layers.find((layer) => layer.storage === "raster")?.id;
-    if (!drafts || !metaValue || !store || !rasterLayerId) {
+    const layerStore = layerStoreRef.current;
+    if (!drafts || !layerStore || !meta) {
       draftCaptureRef.current = null;
       return;
     }
     draftCaptureRef.current = async (): Promise<void> => {
-      const tiles = await store.takeDirtyTiles();
+      const tiles = [];
+      for (const layer of layerStore.rasterLayers()) {
+        const store = layerStore.storeOf(layer.id);
+        if (!store || store.dirtyCount === 0) {
+          continue;
+        }
+        tiles.push(...(await store.takeDirtyTiles()));
+      }
       if (tiles.length === 0) {
         return;
       }
@@ -501,16 +531,10 @@ export function MapEditor(props: MapEditorProps) {
     context.fillStyle = theme.background;
     context.fillRect(0, 0, cssWidth, cssHeight);
 
-    const offscreen = offscreenRef.current;
-    if (offscreen) {
-      context.imageSmoothingEnabled = zoom < 1;
-      context.drawImage(
-        offscreen,
-        -offsetX * zoom,
-        -offsetY * zoom,
-        offscreen.width * zoom,
-        offscreen.height * zoom,
-      );
+    // 多图层合成：按 zIndex 从下到上绘制各可见图层（每层有自己的不透明度）
+    const layerStore = layerStoreRef.current;
+    if (layerStore) {
+      layerStore.renderTo(context, offsetX, offsetY, zoom, dpr);
     }
 
     if (store && zoom >= 0.3) {
@@ -708,47 +732,63 @@ export function MapEditor(props: MapEditorProps) {
       paintRect(store.indices, store.width, rect, value);
       const after = store.readRect(rect);
 
-      historyRef.current.record(rect, before, after);
+      historyRef.current.record(activeLayerIdRef.current ?? "", rect, before, after);
       store.markDirty(rect);
       refreshOffscreen(outerRect(rect, store.width, store.height));
-      setDirtyCount(store.dirtyCount);
+      // 多图层：统计所有图层的待保存量，而不是只看当前层
+      setDirtyCount(layerStoreRef.current?.totalDirtyCount() ?? store.dirtyCount);
       props.onDirtyChange?.(true);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [readOnly, toWorld, refreshOffscreen, props],
   );
 
-  /** 撤销一步 */
+  /** 撤销一步（多图层：回到该步所属图层） */
   const undo = useCallback((): void => {
-    const store = storeRef.current;
+    const layerStore = layerStoreRef.current;
     const entry = historyRef.current.peekUndo();
-    if (!store || !entry) {
+    if (!layerStore || !entry) {
       return;
     }
-    store.writeRect(entry.rect, entry.before);
+    // 切到该步所在的图层：否则用户会看到「撤销了但画面没变」
+    if (entry.layerId && entry.layerId !== activeLayerIdRef.current) {
+      activeLayerIdRef.current = entry.layerId;
+      activeLayerIdStateRef.current = entry.layerId;
+      setActiveLayerId(entry.layerId);
+      storeRef.current = layerStore.storeOf(entry.layerId);
+    }
+    layerStore.writeRect(entry.layerId, entry.rect, entry.before);
     historyRef.current.confirmUndo();
-    rebuildOffscreen();
-    setDirtyCount(store.dirtyCount);
+    layerStore.redrawAllBitmaps();
+    setLayerList([...layerStore.layers]);
+    setDirtyCount(layerStore.totalDirtyCount());
     setHistoryTick((tick) => tick + 1);
     scheduleAutoSave();
     scheduleDraftSave();
-  }, [rebuildOffscreen, scheduleAutoSave, scheduleDraftSave]);
+  }, [scheduleAutoSave, scheduleDraftSave]);
 
-  /** 重做一步 */
+  /** 重做一步（多图层：同样回到该步所属图层） */
   const redo = useCallback((): void => {
-    const store = storeRef.current;
+    const layerStore = layerStoreRef.current;
     const entry = historyRef.current.peekRedo();
-    if (!store || !entry) {
+    if (!layerStore || !entry) {
       return;
     }
-    store.writeRect(entry.rect, entry.after);
+    if (entry.layerId && entry.layerId !== activeLayerIdRef.current) {
+      activeLayerIdRef.current = entry.layerId;
+      activeLayerIdStateRef.current = entry.layerId;
+      setActiveLayerId(entry.layerId);
+      storeRef.current = layerStore.storeOf(entry.layerId);
+    }
+    layerStore.writeRect(entry.layerId, entry.rect, entry.after);
     historyRef.current.confirmRedo();
-    rebuildOffscreen();
-    setDirtyCount(store.dirtyCount);
+    layerStore.redrawAllBitmaps();
+    setLayerList([...layerStore.layers]);
+    setDirtyCount(layerStore.totalDirtyCount());
     setHistoryTick((tick) => tick + 1);
     scheduleAutoSave();
     scheduleDraftSave();
-  }, [rebuildOffscreen, scheduleAutoSave, scheduleDraftSave]);
+  }, [scheduleAutoSave, scheduleDraftSave]);
 
   /** 恢复本地草稿（用户确认后） */
   const handleRestoreDraft = useCallback(async (): Promise<void> => {
@@ -874,6 +914,272 @@ export function MapEditor(props: MapEditorProps) {
     // 半径变了，之前算的面积不再有效
     setStats(null);
   }, []);
+
+  /**
+   * 改白板尺寸：最近邻重采样后分批提交。
+   *
+   * 流程：读当前全幅栅格 → 最近邻重采样到新尺寸 → 逐瓦片编码 → 交给宿主分批提交
+   * → 成功后在本机更新白板尺寸与栅格（不重新从服务端拉，省一次往返）。
+   *
+   * @param targetWidth 目标宽度（会被规整到 128 的倍数）
+   */
+  const handleResize = useCallback(
+    async (targetWidth: number): Promise<void> => {
+      const store = storeRef.current;
+      const metaValue = metaRef.current;
+      if (!store || !metaValue || readOnly) {
+        return;
+      }
+      if (!adapter.resizeBoard) {
+        props.onError?.(new Error("当前宿主未提供改尺寸能力"));
+        return;
+      }
+      const width = normalizeBoardWidth(targetWidth);
+      if (width === store.width) {
+        setResizeOpen(false);
+        return;
+      }
+
+      setResizing(true);
+      try {
+        const height = width / 2;
+        const nextIndices = resampleNearest(store.indices, store.width, store.height, width, height);
+        const layerId = metaValue.layers.find((layer) => layer.storage === "raster")?.id;
+        if (!layerId) {
+          throw new Error("找不到可编辑的栅格图层");
+        }
+
+        // 逐瓦片编码（边缘瓦片按实际尺寸），全部交给宿主分批提交
+        const tiles: Tile[] = [];
+        const cols = Math.ceil(width / TILE_SIZE);
+        const rows = Math.ceil(height / TILE_SIZE);
+        for (let row = 0; row < rows; row += 1) {
+          for (let col = 0; col < cols; col += 1) {
+            const tileWidth = Math.min(TILE_SIZE, width - col * TILE_SIZE);
+            const tileHeight = Math.min(TILE_SIZE, height - row * TILE_SIZE);
+            const slice = new Uint8Array(tileWidth * tileHeight);
+            for (let y = 0; y < tileHeight; y += 1) {
+              const sourceStart = (row * TILE_SIZE + y) * width + col * TILE_SIZE;
+              slice.set(nextIndices.subarray(sourceStart, sourceStart + tileWidth), y * tileWidth);
+            }
+            tiles.push({ coord: { col, row }, format: "cwt1", data: await encodeTile({ indices: slice, width: tileWidth, height: tileHeight }) });
+          }
+        }
+
+        const result = await adapter.resizeBoard({
+          mapId,
+          width,
+          revision: metaValue.revision,
+          first: true,
+          tiles: [{ layerId, tiles }],
+        });
+        const nextRevision = result?.revision ?? metaValue.revision + 1;
+
+        // 本机同步新尺寸：重建仓库，内容用刚算出的栅格
+        const rebuilt = new RasterTileStore({
+          adapter,
+          mapId,
+          layerId,
+          width,
+          height,
+          palette: store.palette,
+        });
+        rebuilt.indices.set(nextIndices);
+        storeRef.current = rebuilt;
+        historyRef.current.clear();
+        rebuildOffscreen();
+        setMeta((current) => (current ? { ...current, revision: nextRevision, board: { ...current.board, width, height } } : current));
+        if (metaRef.current) {
+          metaRef.current = { ...metaRef.current, revision: nextRevision, board: { ...metaRef.current.board, width, height } };
+        }
+        setResizeWidth(width);
+        setResizeOpen(false);
+        setDirtyCount(0);
+        setStats(null);
+        setHistoryTick((tick) => tick + 1);
+        props.onSaveStateChange?.("saved");
+      } catch (err) {
+        props.onError?.(err as Error);
+      } finally {
+        setResizing(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [adapter, mapId, readOnly, rebuildOffscreen, props],
+  );
+
+  /**
+   * 切换当前图层：绘制、撤销、吸管都以它为准。
+   *
+   * 新图层若是栅格，会立刻为它建好数据仓库（空白层），保证「选中即可画」。
+   *
+   * @param layerId 目标图层 id
+   */
+  const selectLayer = useCallback(
+    async (layerId: string): Promise<void> => {
+      const layerStore = layerStoreRef.current;
+      if (!layerStore) {
+        return;
+      }
+      const layer = layerStore.layers.find((item) => item.id === layerId);
+      if (!layer) {
+        return;
+      }
+      if (layer.storage === "raster" && !layerStore.storeOf(layerId)) {
+        // 按需载入（新增图层、或从别处改过图层配置时）
+        await layerStore.load();
+        layerStore.redrawAllBitmaps();
+      }
+      const store = layerStore.storeOf(layerId);
+      if (!store) {
+        props.onError?.(new Error("该图层暂不支持绘制（矢量图层待实现）"));
+        return;
+      }
+      activeLayerIdRef.current = layerId;
+      activeLayerIdStateRef.current = layerId;
+      setActiveLayerId(layerId);
+      storeRef.current = store;
+      setLayerList([...layerStore.layers]);
+      setHistoryTick((tick) => tick + 1);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [props],
+  );
+
+  /** 图层面板动作的统一收尾：刷新列表与画布 */
+  const afterLayerChange = useCallback((): void => {
+    const layerStore = layerStoreRef.current;
+    if (!layerStore) {
+      return;
+    }
+    layerStore.redrawAllBitmaps();
+    setLayerList([...layerStore.layers]);
+    setHistoryTick((tick) => tick + 1);
+  }, []);
+
+  /** 切换图层显隐 */
+  const handleToggleLayerVisible = useCallback(
+    async (layerId: string, visible: boolean): Promise<void> => {
+      const layerStore = layerStoreRef.current;
+      if (!layerStore) {
+        return;
+      }
+      await layerStore.updateLayer(layerId, { visible });
+      afterLayerChange();
+    },
+    [afterLayerChange],
+  );
+
+  /** 重命名图层 */
+  const handleRenameLayer = useCallback(
+    async (layerId: string, name: string): Promise<void> => {
+      const layerStore = layerStoreRef.current;
+      if (!layerStore) {
+        return;
+      }
+      await layerStore.updateLayer(layerId, { name });
+      afterLayerChange();
+    },
+    [afterLayerChange],
+  );
+
+  /** 调整图层透明度 */
+  const handleLayerOpacity = useCallback(
+    async (layerId: string, opacity: number): Promise<void> => {
+      const layerStore = layerStoreRef.current;
+      if (!layerStore) {
+        return;
+      }
+      await layerStore.updateLayer(layerId, { opacity });
+      afterLayerChange();
+    },
+    [afterLayerChange],
+  );
+
+  /** 上移 / 下移图层（本质是交换相邻的 zIndex） */
+  const handleMoveLayer = useCallback(
+    async (layerId: string, direction: "up" | "down"): Promise<void> => {
+      const layerStore = layerStoreRef.current;
+      if (!layerStore) {
+        return;
+      }
+      const ordered = [...layerStore.layers].sort((a, b) => a.zIndex - b.zIndex);
+      const index = ordered.findIndex((layer) => layer.id === layerId);
+      const targetIndex = direction === "up" ? index + 1 : index - 1;
+      if (index < 0 || targetIndex < 0 || targetIndex >= ordered.length) {
+        return;
+      }
+      const current = ordered[index];
+      const target = ordered[targetIndex];
+      if (!current || !target) {
+        return;
+      }
+      const swap = current.zIndex;
+      current.zIndex = target.zIndex;
+      target.zIndex = swap;
+      await layerStore.reorder(ordered.map((layer) => layer.id));
+      afterLayerChange();
+    },
+    [afterLayerChange],
+  );
+
+  /** 新增图层 */
+  const handleAddLayer = useCallback(
+    async (name: string, type: MapLayer["type"]): Promise<void> => {
+      const layerStore = layerStoreRef.current;
+      if (!layerStore) {
+        return;
+      }
+      try {
+        const layer = await layerStore.addLayer({ name, type });
+        afterLayerChange();
+        if (layer.storage === "raster") {
+          await selectLayer(layer.id);
+        }
+      } catch (err) {
+        props.onError?.(err as Error);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [afterLayerChange, selectLayer, props],
+  );
+
+  /** 删除图层（最后一层不允许删） */
+  const handleRemoveLayer = useCallback(
+    async (layerId: string): Promise<void> => {
+      const layerStore = layerStoreRef.current;
+      if (!layerStore) {
+        return;
+      }
+      if (layerStore.layers.length <= 1) {
+        props.onError?.(new Error("至少要保留一个图层"));
+        return;
+      }
+      const layer = layerStore.layers.find((item) => item.id === layerId);
+      const confirmed = globalThis.confirm(`确定删除图层「${layer?.name ?? ""}」？该图层上的内容将一并移除。`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        await layerStore.removeLayer(layerId);
+        if (activeLayerIdRef.current === layerId) {
+          const fallback = layerStore.rasterLayers()[0] ?? null;
+          if (fallback) {
+            await selectLayer(fallback.id);
+          } else {
+            activeLayerIdRef.current = null;
+            storeRef.current = null;
+            setActiveLayerId(null);
+          }
+        }
+        afterLayerChange();
+      } catch (err) {
+        props.onError?.(err as Error);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [afterLayerChange, selectLayer, props],
+  );
 
   /** 指针按下：按当前工具决定绘制 / 取色 / 平移 / 测量 */
   const handlePointerDown = useCallback(
@@ -1271,6 +1577,12 @@ export function MapEditor(props: MapEditorProps) {
           onClick={() => (statsOpen ? setStatsOpen(false) : handleComputeStats())}
         />
         <ToolButton theme={theme} active={radiusOpen} label="半径" onClick={() => setRadiusOpen((open) => !open)} />
+        <ToolButton
+          theme={theme}
+          active={resizeOpen}
+          label="改尺寸"
+          onClick={() => setResizeOpen((open) => !open)}
+        />
         {!readOnly && (
           <ToolButton
             theme={theme}
@@ -1357,10 +1669,36 @@ export function MapEditor(props: MapEditorProps) {
           </div>
         )}
         {!meta && !error && <div style={overlayStyle(theme)}>正在加载白板…</div>}
+        {/* 图层面板（右上下拉，避免挡住画布中央） */}
+        {layerPanelOpen && (
+          <div style={{ position: "absolute", top: 44, right: 8, zIndex: 2 }}>
+            <LayerPanel
+              theme={theme}
+              layers={layerList}
+              activeLayerId={activeLayerId}
+              readOnly={readOnly}
+              onSelect={(layerId) => void selectLayer(layerId)}
+              onToggleVisible={(layerId, visible) => void handleToggleLayerVisible(layerId, visible)}
+              onRename={(layerId, name) => void handleRenameLayer(layerId, name)}
+              onOpacity={(layerId, opacity) => void handleLayerOpacity(layerId, opacity)}
+              onMove={(layerId, direction) => void handleMoveLayer(layerId, direction)}
+              onAdd={(name, type) => void handleAddLayer(name, type)}
+              onRemove={(layerId) => void handleRemoveLayer(layerId)}
+            />
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setLayerPanelOpen((open) => !open)}
+          style={{ ...buttonStyle(theme), position: "absolute", top: 8, right: 8, zIndex: 3 }}
+        >
+          图层 {layerList.length}
+        </button>
         <button
           type="button"
           onClick={() => setPanelOpen((open) => !open)}
-          style={{ ...buttonStyle(theme), position: "absolute", top: 8, right: 8 }}
+          style={{ ...buttonStyle(theme), position: "absolute", top: 8, right: 84, zIndex: 3 }}
         >
           说明
         </button>
@@ -1369,7 +1707,7 @@ export function MapEditor(props: MapEditorProps) {
             style={{
               position: "absolute",
               top: 40,
-              right: 8,
+              right: 84,
               maxWidth: 260,
               padding: 10,
               fontSize: 12,
@@ -1386,6 +1724,69 @@ export function MapEditor(props: MapEditorProps) {
             <div>Ctrl+Z 撤销 · Ctrl+S 保存</div>
             <div>点标记可拖动 · 标记可删除</div>
             <div>停止绘制 3 秒后自动保存</div>
+          </div>
+        )}
+
+        {/* 白板改尺寸 */}
+        {resizeOpen && meta && (
+          <div
+            style={{
+              position: "absolute",
+              right: 12,
+              top: 48,
+              width: 280,
+              padding: 10,
+              fontSize: 12,
+              lineHeight: 1.8,
+              background: `${theme.panel}f2`,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radius,
+              color: theme.textDim,
+            }}
+          >
+            <div style={{ color: theme.text, marginBottom: 4 }}>白板尺寸</div>
+            <div>
+              当前 {meta.board.width}×{meta.board.height}
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <input
+                type="number"
+                min={512}
+                max={16384}
+                step={128}
+                value={resizeWidth}
+                onChange={(event) => setResizeWidth(Number(event.target.value))}
+                style={{
+                  width: 90,
+                  background: theme.background,
+                  color: theme.text,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: theme.radius,
+                  padding: "3px 6px",
+                  fontSize: 12,
+                }}
+              />
+              <span>宽（高自动一半）</span>
+            </div>
+            {(() => {
+              const info = describeResize(meta.board, resizeWidth);
+              return (
+                <div style={{ marginTop: 6, color: info.level === "warn" ? "#c25e5e" : theme.textDim }}>
+                  将变为 {info.normalizedWidth}×{info.normalizedWidth / 2}
+                  <br />
+                  {info.message.replace(/\*\*/g, "")}
+                </div>
+              );
+            })()}
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <ToolButton
+                theme={theme}
+                label={resizing ? "处理中…" : "确认改尺寸"}
+                disabled={resizing || resizeWidth === meta.board.width}
+                onClick={() => void handleResize(resizeWidth)}
+              />
+              <ToolButton theme={theme} label="取消" onClick={() => setResizeOpen(false)} />
+            </div>
           </div>
         )}
 

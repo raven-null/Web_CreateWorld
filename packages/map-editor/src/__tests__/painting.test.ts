@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 绘制内核测试：笔刷几何、撤销栈、瓦片仓库。
  *
  * 这些是「能画」的核心逻辑，与 DOM 无关，因此可以完整单测；
@@ -163,8 +163,8 @@ describe("撤销栈", () => {
   it("一次笔画合并为一步，可撤销可重做", () => {
     const history = new HistoryStack();
     history.begin("笔刷");
-    history.record({ x: 1, y: 1, width: 2, height: 2 }, new Uint8Array(4), new Uint8Array(4).fill(3));
-    history.record({ x: 3, y: 3, width: 2, height: 2 }, new Uint8Array(4), new Uint8Array(4).fill(3));
+    history.record("terrain", { x: 1, y: 1, width: 2, height: 2 }, new Uint8Array(4), new Uint8Array(4).fill(3));
+    history.record("terrain", { x: 3, y: 3, width: 2, height: 2 }, new Uint8Array(4), new Uint8Array(4).fill(3));
     history.commit();
 
     expect(history.undoCount).toBe(1);
@@ -191,13 +191,13 @@ describe("撤销栈", () => {
   it("新操作会清空重做栈", () => {
     const history = new HistoryStack();
     history.begin("a");
-    history.record({ x: 0, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(1));
+    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(1));
     history.commit();
     history.confirmUndo();
     expect(history.redoCount).toBe(1);
 
     history.begin("b");
-    history.record({ x: 0, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(2));
+    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(2));
     history.commit();
     expect(history.redoCount).toBe(0);
   });
@@ -206,7 +206,7 @@ describe("撤销栈", () => {
     const history = new HistoryStack(3);
     for (let i = 0; i < 5; i += 1) {
       history.begin(`step-${i}`);
-      history.record({ x: i, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(i + 1));
+      history.record("terrain", { x: i, y: 0, width: 1, height: 1 }, new Uint8Array(1), new Uint8Array(1).fill(i + 1));
       history.commit();
     }
     expect(history.undoCount).toBe(3);

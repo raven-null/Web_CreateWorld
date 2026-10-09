@@ -9,10 +9,12 @@
  */
 import type { PixelRect } from "./tile-store";
 
-/** 一步历史：某矩形区域的前后两份像素数据 */
+/** 一步历史：某图层某矩形区域的前后两份像素数据 */
 export interface HistoryEntry {
   /** 描述（用于调试与界面提示，如「笔刷」「橡皮」） */
   label: string;
+  /** 属于哪个图层：多图层下撤销必须回到原图层 */
+  layerId: string;
   rect: PixelRect;
   before: Uint8Array;
   after: Uint8Array;
@@ -24,15 +26,23 @@ export const DEFAULT_HISTORY_LIMIT = 30;
 /**
  * 撤销 / 重做栈。
  *
- * 用法：`begin()` 开始一步 → `record(...)` 记录受影响的区域
+ * 用法：`begin()` 开始一步 → `record(layerId, ...)` 记录受影响的区域
  * → `commit()` 结束该步；或 `abort()` 放弃（没有实际改动时）。
+ *
+ * 多图层注意：一步笔画只发生在一个图层上（用户绘制前已选定当前图层），
+ * 因此记录里带上 layerId，撤销时回到那一层即可。
  */
 export class HistoryStack {
   private readonly past: HistoryEntry[] = [];
   private readonly future: HistoryEntry[] = [];
   private readonly limit: number;
-  private pending: { label: string; rect: PixelRect | null; before: Uint8Array | null; after: Uint8Array | null } | null =
-    null;
+  private pending: {
+    label: string;
+    layerId: string;
+    rect: PixelRect | null;
+    before: Uint8Array | null;
+    after: Uint8Array | null;
+  } | null = null;
 
   constructor(limit = DEFAULT_HISTORY_LIMIT) {
     this.limit = Math.max(1, limit);
@@ -53,21 +63,23 @@ export class HistoryStack {
    * @param label 步骤描述
    */
   begin(label: string): void {
-    this.pending = { label, rect: null, before: null, after: null };
+    this.pending = { label, layerId: "", rect: null, before: null, after: null };
   }
 
   /**
    * 记录一次落点对区域的影响。
    *
    * `before` 与 `after` 由调用方负责读取（栈只负责保存与回放）。
+   * @param layerId 所在图层
    * @param rect 受影响矩形
    * @param before 修改前的像素
    * @param after 修改后的像素
    */
-  record(rect: PixelRect, before: Uint8Array, after: Uint8Array): void {
+  record(layerId: string, rect: PixelRect, before: Uint8Array, after: Uint8Array): void {
     if (!this.pending) {
       return;
     }
+    this.pending.layerId = layerId;
     this.pending.rect = rect;
     this.pending.before = before;
     this.pending.after = after;
@@ -85,6 +97,7 @@ export class HistoryStack {
     }
     this.past.push({
       label: pending.label,
+      layerId: pending.layerId,
       rect: pending.rect,
       before: pending.before,
       after: pending.after,

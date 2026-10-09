@@ -105,6 +105,106 @@ async function loadCanvasMap(db: D1Database, mapId: string, userId: string | nul
 }
 
 /**
+ * 白板改尺寸（提交重采样后的瓦片，可分批）。
+ *
+ * body: `{ revision, width, tiles: [{ layerId, col, row, data(base64) }] }`
+ *
+ * 分工：**客户端负责重采样**（最近邻），服务端只做校验与写入。
+ * 首批（白板宽度与请求不一致时）先清空相关图层的旧瓦片再更新尺寸；
+ * 后续批次作为续传写入。首批会校验 revision，避免覆盖别人的改动。
+ */
+canvasRoutes.post("/maps/:mapId/resize", requireLogin, async (c) => {
+  const user = getUser(c);
+  const loaded = await loadCanvasMap(c.env.DB, c.req.param("mapId"), user.id);
+  if (!loaded) {
+    return fail(c, "地图不存在", 404);
+  }
+  if (!loaded.canEdit) {
+    return fail(c, "没有编辑权限", 403);
+  }
+
+  let body: { revision?: unknown; width?: unknown; tiles?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, "请求格式不正确");
+  }
+
+  const revision = Number(body.revision);
+  if (!Number.isInteger(revision)) {
+    return fail(c, "缺少版本号");
+  }
+  const width = normalizeWidth(body.width);
+  if (!width) {
+    return fail(c, `白板宽度需在 ${BOARD_MIN_WIDTH}~${BOARD_MAX_WIDTH} 之间`);
+  }
+  const height = width / 2;
+
+  if (!Array.isArray(body.tiles) || body.tiles.length === 0) {
+    return fail(c, "没有需要保存的瓦片");
+  }
+  if (body.tiles.length > MAX_TILES_PER_SAVE) {
+    return fail(c, `单次最多提交 ${MAX_TILES_PER_SAVE} 个瓦片，请分批`);
+  }
+
+  const totalCols = Math.ceil(width / 256);
+  const totalRows = Math.ceil(height / 256);
+  const now = Date.now();
+  const statements: D1PreparedStatement[] = [];
+  const touchedLayers = new Set<string>();
+
+  for (const raw of body.tiles) {
+    const tile = raw as { layerId?: unknown; col?: unknown; row?: unknown; data?: unknown };
+    const layerId = typeof tile.layerId === "string" ? tile.layerId : "";
+    if (!layerId) {
+      return fail(c, "缺少图层参数");
+    }
+    const col = Number(tile.col);
+    const row = Number(tile.row);
+    if (!isValidTileCoord(col, row, totalCols, totalRows)) {
+      return fail(c, `瓦片坐标越界：col=${String(tile.col)}, row=${String(tile.row)}`);
+    }
+    if (typeof tile.data !== "string" || !tile.data) {
+      return fail(c, "瓦片数据格式不正确");
+    }
+    const bytes = base64ToBytes(tile.data);
+    if (bytes.length > 96 * 1024) {
+      return fail(c, "单个瓦片数据过大");
+    }
+    touchedLayers.add(layerId);
+    statements.push(
+      c.env.DB.prepare(
+        `INSERT INTO map_tiles (map_id, layer_id, tile_col, tile_row, format, data, updated_at)
+         VALUES (?, ?, ?, ?, 'cwt1', ?, ?)
+         ON CONFLICT (map_id, layer_id, tile_col, tile_row) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+      ).bind(loaded.map.id, layerId, col, row, bytes, now),
+    );
+  }
+
+  const isFirstBatch = loaded.map.board_width !== width;
+  if (isFirstBatch) {
+    if (revision !== loaded.map.revision) {
+      return c.json(
+        { ok: false as const, error: "地图已被修改", data: { revision: loaded.map.revision } },
+        409,
+      );
+    }
+    for (const layerId of touchedLayers) {
+      statements.push(
+        c.env.DB.prepare("DELETE FROM map_tiles WHERE map_id = ? AND layer_id = ?").bind(loaded.map.id, layerId),
+      );
+    }
+    statements.push(
+      c.env.DB.prepare("UPDATE maps SET board_width = ?, board_height = ?, revision = ?, updated_at = ? WHERE id = ?")
+        .bind(width, height, revision + 1, now, loaded.map.id),
+    );
+  }
+
+  await c.env.DB.batch(statements);
+  return ok(c, { width, height, firstBatch: isFirstBatch, tiles: statements.length });
+});
+
+/**
  * 创建白板地图（自动建一个「地形」图层）。
  * body: { name, width, radiusKm? }
  */

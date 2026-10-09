@@ -95,6 +95,23 @@ export interface MapHostAdapter {
 
   /** 删除标记 */
   deleteMarker?(input: { mapId: string; markerId: string }): Promise<void>;
+
+  /**
+   * 改白板尺寸（重采样后的瓦片，可分批提交）。
+   *
+   * 分工：**重采样由插件完成**（最近邻），宿主只负责把瓦片按批写入后端。
+   * `first` 标记是否为第一批——后端通常在首批时清空旧瓦片并更新白板尺寸。
+   *
+   * @param input 地图 id、新宽度、版本号、是否首批、以及一批瓦片（含所属图层）
+   * @returns 服务端接受后的新版本号（若无返回则回传传入值）
+   */
+  resizeBoard?(input: {
+    mapId: string;
+    width: number;
+    revision: number;
+    first: boolean;
+    tiles: { layerId: string; tiles: Tile[] }[];
+  }): Promise<{ revision: number } | void>;
 }
 
 /** 保存状态：与主站条目编辑器的反馈文案保持一致 */

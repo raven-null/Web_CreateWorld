@@ -15,5 +15,7 @@ export * from "./export-image";
 export * from "./history";
 export * from "./marker-store";
 export * from "./measure";
+export * from "./resize";
 export * from "./tile-store";
+export * from "./panels/LayerPanel";
 export { MapEditor } from "./MapEditor";

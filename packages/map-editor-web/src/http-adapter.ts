@@ -198,6 +198,48 @@ export function createHttpMapHostAdapter(options: HttpMapAdapterOptions = {}): M
       });
     },
 
+    /** 改白板尺寸：把重采样后的瓦片按批提交给后端 */
+    async resizeBoard(input: {
+      mapId: string;
+      width: number;
+      revision: number;
+      first: boolean;
+      tiles: { layerId: string; tiles: Tile[] }[];
+    }): Promise<{ revision: number }> {
+      // 后端单次最多接收 16 个瓦片，这里先把各层瓦片摊平再切块
+      const payload: { layerId: string; col: number; row: number; data: string }[] = [];
+      for (const group of input.tiles) {
+        for (const tile of group.tiles) {
+          payload.push({
+            layerId: group.layerId,
+            col: tile.coord.col,
+            row: tile.coord.row,
+            data: bytesToBase64(tile.data),
+          });
+        }
+      }
+
+      let revision = input.revision;
+      const chunkSize = 16;
+      for (let i = 0; i < payload.length; i += chunkSize) {
+        const chunk = payload.slice(i, i + chunkSize);
+        const result = await requestJson<{ width: number; height: number; firstBatch: boolean }>(
+          request,
+          `${baseUrl}/maps/${input.mapId}/resize`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ revision, width: input.width, tiles: chunk }),
+          },
+        );
+        // 首批服务端会把 revision +1，之后的批次沿用新版本号
+        if (result.firstBatch) {
+          revision += 1;
+        }
+      }
+      return { revision };
+    },
+
     /** 矢量对象与图层接口首期未实现，缺接口只少能力、不影响 2D 绘制 */
     loadFeatures: undefined,
     saveFeatures: undefined,
