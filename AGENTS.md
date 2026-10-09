@@ -59,8 +59,10 @@ packages/
 
 ## 生产环境
 
-- 地址：https://ravennull.monster（自定义域名，绑定在 Cloudflare Worker 上）
-- 备用地址：https://create-world.wyz15728790233.workers.dev（Worker 默认地址，与自定义域名双活）
+- 地址：https://ravennull.monster（自定义域名，绑定在 Cloudflare Worker 上）—— **对外应只使用这个地址**
+- Worker 默认地址：https://create-world.wyz15728790233.workers.dev（仍部署在 Cloudflare，域名本身有效）
+  - ⚠️ **实测（2026-10-09）：该域名在部分网络下 DNS 被污染**，解析到 `108.160.169.181`（非 Cloudflare IP 段，疑似运营商劫持），`curl` 连接直接超时；而自定义域名正常解析到 Cloudflare（`104.21.x` / `172.67.x`）
+  - 结论：不要再把它当作"双活备用地址"宣传或依赖；需要备用入口时应另配一个自定义域名
 - 架构：单个 Worker 同时提供 API 与前端静态资源（同域）；数据在 D1，图片在 KV
 - **`BETTER_AUTH_URL` 必须与当前对外域名一致**，否则浏览器会拒收会话 cookie（现象：页面能打开但登录不上）
 - 生产密钥（BETTER_AUTH_SECRET / MIGRATE_SECRET / AI_KEY_SECRET / ADMIN_USERNAMES / BOOTSTRAP_INVITE_CODE / BETTER_AUTH_URL）
