@@ -43,6 +43,9 @@ const RULES = [
     // `\bentries\b(?!\s*\()` 排除标准库方法（Array/Map/Iterator 的 entries()）
     pattern: /\bworlds\b|worldId|world_id|\bentries\b(?!\s*\()|entryId|entry_id|inviteCode|invite_code|\/api\//,
     hint: "用 mapId / layerId / linkRef 这类中性标识代替",
+    // 平台适配器实现层的职责就是「与宿主协议对话」，必须使用宿主的字段名
+    // （协议翻译发生在这一层）；插件本体与内核仍是零业务概念
+    exceptPaths: [/packages[\\/]map-editor-web[\\/]/],
   },
   {
     id: 3,

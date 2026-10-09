@@ -28,6 +28,24 @@ export interface SaveLayersInput {
 }
 
 /**
+ * 宿主侧标记行（最小字段集）。
+ *
+ * 刻意不叫 `entryId` / `entryTitle`：插件不认识「条目」这类业务概念，
+ * 主站把自己的条目 id 放进 `linkRef` 即可，插件只把它当不透明字符串透传。
+ */
+export interface HostMarker {
+  id: string;
+  /** 平面归一化坐标（0~1，原点左上） */
+  u: number;
+  v: number;
+  label: string;
+  /** 宿主侧关联标识（可空） */
+  linkRef?: string | null;
+  /** 关联对象的显示名（可空） */
+  linkLabel?: string | null;
+}
+
+/**
  * 宿主适配器：插件与外界的所有数据进出都走这里。
  *
  * `adapter` 是**必需**参数而不是可选 —— 「插件自带后端」是伪需求，
@@ -64,6 +82,24 @@ export interface MapHostAdapter {
 
   /** 本地草稿；不实现则退化为仅内存，离开页面即丢 */
   drafts?: DraftStore;
+
+  /** 读取标记列表（锚点对象）。宿主不实现则画布不显示标记 */
+  loadMarkers?(mapId: string): Promise<HostMarker[]>;
+
+  /** 写回标记位置（归一化坐标） */
+  saveMarkerPosition?(input: { mapId: string; markerId: string; u: number; v: number }): Promise<void>;
+
+  /** 新增标记 */
+  createMarker?(input: {
+    mapId: string;
+    u: number;
+    v: number;
+    label: string;
+    linkRef: string | null;
+  }): Promise<{ id: string }>;
+
+  /** 删除标记 */
+  deleteMarker?(input: { mapId: string; markerId: string }): Promise<void>;
 }
 
 /** 保存状态：与主站条目编辑器的反馈文案保持一致 */

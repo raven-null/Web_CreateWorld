@@ -12,5 +12,6 @@ export * from "./props";
 export * from "./theme";
 export * from "./brush-engine";
 export * from "./history";
+export * from "./marker-store";
 export * from "./tile-store";
 export { MapEditor } from "./MapEditor";

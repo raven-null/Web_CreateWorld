@@ -33,6 +33,7 @@ import {
   type BrushSettings,
 } from "./brush-engine";
 import { HistoryStack } from "./history";
+import { MarkerStore, type CanvasMarker } from "./marker-store";
 import { RasterTileStore, TILE_SIZE, tileRangeOf, type PixelRect } from "./tile-store";
 import { resolveTheme, themeToCssVars } from "./theme";
 
@@ -45,6 +46,9 @@ const GRATICULE_STEP = 30;
 const IDLE_SAVE_DELAY = 3000;
 /** 单次保存最多提交的瓦片数（与后端上限一致） */
 const MAX_TILES_PER_SAVE = 16;
+
+/** 标记的命中半径（屏幕像素）：比绘制半径大一些，便于点选 */
+const MARKER_HIT_RADIUS_PX = 12;
 
 /** 视口状态：缩放与平移偏移（世界像素） */
 interface Viewport {
@@ -69,6 +73,7 @@ export function MapEditor(props: MapEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const storeRef = useRef<RasterTileStore | null>(null);
+  const markerStoreRef = useRef<MarkerStore | null>(null);
   const historyRef = useRef(new HistoryStack());
   const viewportRef = useRef<Viewport>({ zoom: 1, offsetX: 0, offsetY: 0 });
   const brushRef = useRef<BrushSettings>({ ...DEFAULT_BRUSH });
@@ -77,6 +82,8 @@ export function MapEditor(props: MapEditorProps) {
   const erasingRef = useRef(false);
   /** 上一次落点的屏幕坐标，用于在两点间补点 */
   const lastPaintRef = useRef<{ x: number; y: number } | null>(null);
+  /** 正在拖动的标记（标记整合） */
+  const draggingMarkerRef = useRef<{ id: string; grabDx: number; grabDy: number } | null>(null);
   const panRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(null);
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -91,6 +98,13 @@ export function MapEditor(props: MapEditorProps) {
   const [historyTick, setHistoryTick] = useState(0);
   const [palette, setPalette] = useState<TerrainBrush[]>(DEFAULT_TERRAIN_PALETTE);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [markerMode, setMarkerMode] = useState(false);
+  const [pendingMarker, setPendingMarker] = useState<{ x: number; y: number } | null>(null);
+  const [markerLabel, setMarkerLabel] = useState("");
+  const [markerTick, setMarkerTick] = useState(0);
+  const [markerCount, setMarkerCount] = useState(0);
+  /** 当前选中的标记 id（用 ref 给渲染循环读，避免每帧重渲染） */
+  const selectedMarkerIdRef = useRef<string | null>(null);
 
   viewportRef.current = viewport;
   brushRef.current = brush;
@@ -139,6 +153,21 @@ export function MapEditor(props: MapEditorProps) {
           setViewport(fitViewport(result.board.width, result.board.height, container.clientWidth, container.clientHeight));
         }
         rebuildOffscreen();
+
+        // 标记：走宿主既有接口，宿主未实现则列表为空（缺能力不影响绘制）
+        const markerStore = new MarkerStore({
+          adapter,
+          mapId,
+          boardWidth: result.board.width,
+          boardHeight: result.board.height,
+          revision: result.revision,
+        });
+        markerStoreRef.current = markerStore;
+        const markerTotal = await markerStore.load();
+        if (!cancelled) {
+          setMarkerCount(markerTotal);
+          setMarkerTick((tick) => tick + 1);
+        }
         setHistoryTick((tick) => tick + 1);
       } catch (err) {
         if (!cancelled) {
@@ -381,8 +410,40 @@ export function MapEditor(props: MapEditorProps) {
       }
     }
 
+    // 标记：画在底图之上、经纬网之后；未选中的只画点，选中的加光晕与名称
+    const markerStore = markerStoreRef.current;
+    if (markerStore) {
+      for (const marker of markerStore.markers) {
+        const screenX = (marker.x - offsetX) * zoom;
+        const screenY = (marker.y - offsetY) * zoom;
+        if (screenX < -20 || screenY < -20 || screenX > cssWidth + 20 || screenY > cssHeight + 20) {
+          continue;
+        }
+        const selected = marker.id === selectedMarkerIdRef.current;
+        context.beginPath();
+        context.arc(screenX, screenY, selected ? 8 : 6, 0, Math.PI * 2);
+        context.fillStyle = "#c9a15c";
+        context.globalAlpha = 0.75;
+        context.fill();
+        context.globalAlpha = 1;
+        context.lineWidth = 2;
+        context.strokeStyle = selected ? "#ffffff" : "#14120f";
+        context.stroke();
+
+        if (selected || zoom >= 1) {
+          context.font = '12px "Source Han Sans SC", "Noto Sans SC", sans-serif';
+          context.textBaseline = "bottom";
+          context.fillStyle = "#14120f";
+          const textWidth = context.measureText(marker.label || "标记").width;
+          context.fillRect(screenX + 8, screenY - 20, textWidth + 6, 15);
+          context.fillStyle = theme.text;
+          context.fillText(marker.label || "标记", screenX + 11, screenY - 7);
+        }
+      }
+    }
+
     context.restore();
-  }, [viewport, theme, meta, historyTick, saveState]);
+  }, [viewport, theme, meta, historyTick, saveState, markerTick]);
 
   /** 屏幕坐标 → 世界像素 */
   const toWorld = useCallback((screenX: number, screenY: number): { x: number; y: number } => {
@@ -480,6 +541,32 @@ export function MapEditor(props: MapEditorProps) {
       // 中键或空格由 pan 工具表示；右键一律擦除
       const isErase = event.button === 2 || tool === "eraser";
 
+      // ① 标记优先：点在标记上就进入拖动（无论当前是什么工具）
+      const markerStore = markerStoreRef.current;
+      if (markerStore && !isErase && event.button === 0) {
+        const grab = toWorld(x, y);
+        const hit = markerStore.hitTest(grab.x, grab.y, MARKER_HIT_RADIUS_PX / viewportRef.current.zoom);
+        if (hit) {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          draggingMarkerRef.current = { id: hit.id, grabDx: hit.x - grab.x, grabDy: hit.y - grab.y };
+          selectedMarkerIdRef.current = hit.id;
+          setMarkerTick((tick) => tick + 1);
+          return;
+        }
+        // 点在空白处：清除选中
+        if (selectedMarkerIdRef.current) {
+          selectedMarkerIdRef.current = null;
+          setMarkerTick((tick) => tick + 1);
+        }
+      }
+
+      // ② 新增标记模式：点击空白处弹出命名表单
+      if (markerMode && event.button === 0 && !readOnly) {
+        const target = toWorld(x, y);
+        setPendingMarker({ x: target.x, y: target.y });
+        return;
+      }
+
       if (tool === "pan" || event.button === 1) {
         event.currentTarget.setPointerCapture(event.pointerId);
         panRef.current = {
@@ -541,6 +628,18 @@ export function MapEditor(props: MapEditorProps) {
         return;
       }
 
+      // 拖动标记：即时更新（松手才写回宿主）
+      const dragging = draggingMarkerRef.current;
+      if (dragging) {
+        const store = markerStoreRef.current;
+        const world = toWorld(x, y);
+        if (store) {
+          store.moveTo(dragging.id, world.x + dragging.grabDx, world.y + dragging.grabDy);
+          setMarkerTick((tick) => tick + 1);
+        }
+        return;
+      }
+
       // 未按下时只刷新光标预览
       if (!paintingRef.current) {
         drawCursorOnly();
@@ -570,6 +669,19 @@ export function MapEditor(props: MapEditorProps) {
       panRef.current = null;
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      // 拖动标记结束：写回宿主（归一化坐标）
+      const dragging = draggingMarkerRef.current;
+      draggingMarkerRef.current = null;
+      if (dragging) {
+        void (async () => {
+          try {
+            await markerStoreRef.current?.persistPosition(dragging.id);
+          } catch (err) {
+            props.onError?.(err as Error);
+          }
+        })();
+        return;
       }
       if (paintingRef.current) {
         paintingRef.current = false;
@@ -621,6 +733,61 @@ export function MapEditor(props: MapEditorProps) {
     }
     setViewport(fitViewport(store.width, store.height, container.clientWidth, container.clientHeight));
   }, []);
+
+  /** 确认新增标记 */
+  const handleCreateMarker = useCallback(async (): Promise<void> => {
+    const store = markerStoreRef.current;
+    const pending = pendingMarker;
+    if (!store || !pending) {
+      return;
+    }
+    try {
+      const created = await store.create(pending.x, pending.y, markerLabel.trim() || "未命名标记", null);
+      if (!created) {
+        props.onError?.(new Error("当前宿主未提供标记能力"));
+        return;
+      }
+      setMarkerCount(store.markers.length);
+      setMarkerTick((tick) => tick + 1);
+      selectedMarkerIdRef.current = created.id;
+      setPendingMarker(null);
+      setMarkerLabel("");
+    } catch (err) {
+      props.onError?.(err as Error);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingMarker, markerLabel, props]);
+
+  /**
+   * 删除标记。
+   * 主站既有地图页用的是原生确认弹窗（未自写 Confirm 组件），这里保持一致，
+   * 由宿主通过 `confirm` 注入的语义仍可替换（本期直接用原生）。
+   * @param marker 待删除的标记
+   */
+  const handleDeleteMarker = useCallback(
+    async (marker: CanvasMarker): Promise<void> => {
+      const store = markerStoreRef.current;
+      if (!store) {
+        return;
+      }
+      const confirmed = globalThis.confirm(`确定删除标记「${marker.label || "未命名"}」？`);
+      if (!confirmed) {
+        return;
+      }
+      try {
+        await store.remove(marker.id);
+        if (selectedMarkerIdRef.current === marker.id) {
+          selectedMarkerIdRef.current = null;
+        }
+        setMarkerCount(store.markers.length);
+        setMarkerTick((tick) => tick + 1);
+      } catch (err) {
+        props.onError?.(err as Error);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [props],
+  );
 
   /** 快捷键：B / E / I / V、Ctrl+Z、Ctrl+Shift+Z、Ctrl+S */
   useEffect(() => {
@@ -718,6 +885,17 @@ export function MapEditor(props: MapEditorProps) {
         <ToolButton theme={theme} label="重做" disabled={!canRedo} onClick={redo} />
         <span style={dividerStyle(theme)} />
         <ToolButton theme={theme} label="适应" onClick={handleFit} />
+        {!readOnly && (
+          <ToolButton
+            theme={theme}
+            active={markerMode}
+            label={markerMode ? "点地图放标记…" : "标记"}
+            onClick={() => {
+              setMarkerMode((value) => !value);
+              setPendingMarker(null);
+            }}
+          />
+        )}
         <span style={{ marginLeft: "auto", fontSize: 12, color: theme.textDim }}>{zoomPercent}%</span>
         {!readOnly && (
           <ToolButton
@@ -824,7 +1002,137 @@ export function MapEditor(props: MapEditorProps) {
             <div>滚轮缩放 · 平移工具拖拽画布</div>
             <div>B 笔刷 · E 橡皮 · I 吸管 · V 平移</div>
             <div>Ctrl+Z 撤销 · Ctrl+S 保存</div>
+            <div>点标记可拖动 · 标记可删除</div>
             <div>停止绘制 3 秒后自动保存</div>
+          </div>
+        )}
+
+        {/* 新增标记的命名表单（就地输入，不弹独立窗口） */}
+        {pendingMarker && (
+          <div
+            style={{
+              position: "absolute",
+              left: 12,
+              bottom: 12,
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              padding: "8px 10px",
+              background: theme.panel,
+              border: `1px solid ${theme.accent}`,
+              borderRadius: theme.radius,
+              fontSize: 13,
+            }}
+          >
+            <span style={{ color: theme.textDim }}>标记名称</span>
+            <input
+              autoFocus
+              value={markerLabel}
+              onChange={(event) => setMarkerLabel(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void handleCreateMarker();
+                } else if (event.key === "Escape") {
+                  setPendingMarker(null);
+                }
+              }}
+              placeholder="如：银月城"
+              style={{
+                background: theme.background,
+                color: theme.text,
+                border: `1px solid ${theme.border}`,
+                borderRadius: theme.radius,
+                padding: "4px 8px",
+                fontSize: 13,
+                width: 150,
+              }}
+            />
+            <ToolButton theme={theme} label="创建" onClick={() => void handleCreateMarker()} />
+            <ToolButton theme={theme} label="取消" onClick={() => setPendingMarker(null)} />
+          </div>
+        )}
+
+        {/* 标记列表 */}
+        {markerCount > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              left: 12,
+              top: 12,
+              width: 190,
+              maxHeight: 260,
+              overflowY: "auto",
+              padding: 8,
+              fontSize: 12,
+              background: `${theme.panel}e6`,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radius,
+              color: theme.textDim,
+            }}
+          >
+            <div style={{ marginBottom: 6, color: theme.text }}>标记 {markerCount}</div>
+            {markerStoreRef.current?.markers.map((marker) => (
+              <div
+                key={marker.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "3px 0",
+                  borderTop: `1px solid ${theme.border}`,
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    // 点击列表项：聚焦到该标记（把标记移到视口中心）
+                    const container = containerRef.current;
+                    if (!container) {
+                      return;
+                    }
+                    const zoom = viewportRef.current.zoom;
+                    setViewport({
+                      zoom,
+                      offsetX: marker.x - container.clientWidth / 2 / zoom,
+                      offsetY: marker.y - container.clientHeight / 2 / zoom,
+                    });
+                    selectedMarkerIdRef.current = marker.id;
+                    setMarkerTick((tick) => tick + 1);
+                  }}
+                  style={{
+                    flex: 1,
+                    textAlign: "left",
+                    background: "transparent",
+                    border: "none",
+                    color:
+                      selectedMarkerIdRef.current === marker.id ? theme.accent : theme.textDim,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {marker.label || "未命名"}
+                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    title="删除标记"
+                    onClick={() => void handleDeleteMarker(marker)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: theme.textFaint,
+                      cursor: "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -835,6 +1143,7 @@ export function MapEditor(props: MapEditorProps) {
           {meta ? `${meta.board.width}×${meta.board.height}` : "—"} · 缩放 {zoomPercent}%
         </span>
         <span>待保存瓦片 {dirtyCount}</span>
+        {markerCount > 0 && <span>标记 {markerCount}</span>}
         <span>
           {readOnly
             ? "只读"

@@ -235,7 +235,7 @@ mapRoutes.post("/maps/:mapId/markers", requireLogin, async (c) => {
   return ok(c, { id }, 201);
 });
 
-/** 更新标记 PATCH /markers/:markerId { label?, entryId? } */
+/** 更新标记 PATCH /markers/:markerId { label?, entryId?, x?, y? } */
 mapRoutes.patch("/markers/:markerId", requireLogin, async (c) => {
   const user = getUser(c);
   const marker = await c.env.DB.prepare("SELECT * FROM markers WHERE id = ?")
@@ -249,7 +249,7 @@ mapRoutes.patch("/markers/:markerId", requireLogin, async (c) => {
     return fail(c, "没有编辑权限", 403);
   }
 
-  let body: { label?: unknown; entryId?: unknown };
+  let body: { label?: unknown; entryId?: unknown; x?: unknown; y?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -270,8 +270,28 @@ mapRoutes.patch("/markers/:markerId", requireLogin, async (c) => {
     entryId = body.entryId;
   }
 
-  await c.env.DB.prepare("UPDATE markers SET label = ?, entry_id = ? WHERE id = ?")
-    .bind(label, entryId, marker.id)
+  // 坐标：画布编辑器拖动标记时提交（0~1 相对比例，与既有约定一致）
+  let nextX = marker.x;
+  let nextY = marker.y;
+  if (body.x !== undefined || body.y !== undefined) {
+    const candidateX = Number(body.x);
+    const candidateY = Number(body.y);
+    if (
+      !Number.isFinite(candidateX) ||
+      !Number.isFinite(candidateY) ||
+      candidateX < 0 ||
+      candidateX > 1 ||
+      candidateY < 0 ||
+      candidateY > 1
+    ) {
+      return fail(c, "标记坐标不正确");
+    }
+    nextX = candidateX;
+    nextY = candidateY;
+  }
+
+  await c.env.DB.prepare("UPDATE markers SET label = ?, entry_id = ?, x = ?, y = ? WHERE id = ?")
+    .bind(label, entryId, nextX, nextY, marker.id)
     .run();
   return ok(c, { updated: true });
 });

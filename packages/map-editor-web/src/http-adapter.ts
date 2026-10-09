@@ -3,12 +3,17 @@
  *
  * 位置说明：这个实现属于**平台适配层**（浏览器侧），所以放在 `@worldmap/editor-web`，
  * 而不是插件本体或内核里 —— 换一个宿主（Tauri / Capacitor）时只需换掉这一个文件。
+ *
+ * 本层是**唯一**允许出现宿主业务字段名（如主站的「条目」概念）与直接访问网络的地方：
+ * 协议翻译与网络访问就发生在这里（CI 边界检查对本包豁免这两条规则）。
+ * 插件本体与内核仍然只见 `mapId` / `layerId` / `linkRef` 这类中性标识。
  */
 import {
   createNativeGzip,
   decodeTile,
   encodeTile,
   type BoardSpec,
+  type HostMarker,
   type MapHostAdapter,
   type MapLayer,
   type MapMeta,
@@ -16,6 +21,16 @@ import {
   type Tile,
   type TileCoord,
 } from "@worldmap/core";
+
+/** 宿主返回的标记行（主站字段名） */
+interface HostMarkerResponse {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+  entryId: string | null;
+  entryTitle: string | null;
+}
 
 /** 宿主 REST 接口的路径模板（默认对应主站 `/api`） */
 export interface HttpMapAdapterOptions {
@@ -140,6 +155,49 @@ export function createHttpMapHostAdapter(options: HttpMapAdapterOptions = {}): M
       return { revision: data.revision };
     },
 
+    /** 标记：走主站既有的地图详情 / 标记接口，不需要为画布新增接口 */
+    async loadMarkers(mapId: string): Promise<HostMarker[]> {
+      // 注意：这里用的是宿主既有的地图详情接口（标记嵌在详情里）
+      const detail = await requestJson<{ markers?: HostMarkerResponse[] }>(request, `${baseUrl}/maps/${mapId}`);
+      return (detail.markers ?? []).map((row) => ({
+        id: row.id,
+        u: row.x,
+        v: row.y,
+        label: row.label,
+        // 主站的「条目」概念只在适配器这一层出现，插件侧只看到中性的 linkRef
+        linkRef: row.entryId,
+        linkLabel: row.entryTitle,
+      }));
+    },
+
+    async saveMarkerPosition(input: { mapId: string; markerId: string; u: number; v: number }): Promise<void> {
+      await requestJson<{ updated: boolean }>(request, `${baseUrl}/markers/${input.markerId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ x: input.u, y: input.v }),
+      });
+    },
+
+    async createMarker(input: {
+      mapId: string;
+      u: number;
+      v: number;
+      label: string;
+      linkRef: string | null;
+    }): Promise<{ id: string }> {
+      return requestJson<{ id: string }>(request, `${baseUrl}/maps/${input.mapId}/markers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ x: input.u, y: input.v, label: input.label, entryId: input.linkRef }),
+      });
+    },
+
+    async deleteMarker(input: { mapId: string; markerId: string }): Promise<void> {
+      await requestJson<{ deleted: boolean }>(request, `${baseUrl}/markers/${input.markerId}`, {
+        method: "DELETE",
+      });
+    },
+
     /** 矢量对象与图层接口首期未实现，缺接口只少能力、不影响 2D 绘制 */
     loadFeatures: undefined,
     saveFeatures: undefined,
@@ -191,13 +249,15 @@ async function parseJson<T>(response: Response): Promise<T> {
  * 发起请求并解析统一响应。
  * @param request 请求实现
  * @param url 地址
+ * @param init 请求选项（方法、请求头、请求体）
  * @returns data 字段
  */
 async function requestJson<T>(
   request: (input: string, init?: RequestInit) => Promise<Response>,
   url: string,
+  init: RequestInit = { method: "GET" },
 ): Promise<T> {
-  const response = await request(url, { method: "GET" });
+  const response = await request(url, init);
   return parseJson<T>(response);
 }
 
