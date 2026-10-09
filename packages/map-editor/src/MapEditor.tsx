@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 地图编辑器插件的主组件：2D 画布 + 地形绘制。
  *
  * 设计约束（方案 §15.1，由 scripts/check-boundaries.mjs 强制）：
@@ -131,6 +131,13 @@ export function MapEditor(props: MapEditorProps) {
   /** 草稿定时器，以及「取当前草稿瓦片」的实现（由 effect 按依赖重建） */
   const draftTimerRef = useRef<number | null>(null);
   const draftCaptureRef = useRef<(() => Promise<void>) | null>(null);
+  /**
+   * 保存互斥锁：防止并发保存。
+   *
+   * 曾经踩到的坑：连点撤销 / 重做会各触发一次自动保存，两个请求读同一个
+   * revision 一起提交，后到的那个必然 409。加锁后同一时刻只允许一次保存。
+   */
+  const savingRef = useRef(false);
   /** 天体半径（km）：决定比例尺、面积与统计，改它不改已画内容 */
   const [radiusKm, setRadiusKm] = useState(6371);
   /** 测量：折点（世界像素）与结果 */
@@ -396,11 +403,16 @@ export function MapEditor(props: MapEditorProps) {
     if (!layerStore || !metaValue || readOnly) {
       return;
     }
+    // 已有保存在进行中就跳过：并发的两个请求会用同一个 revision，后到的必然冲突
+    if (savingRef.current) {
+      return;
+    }
     if (layerStore.totalDirtyCount() === 0) {
       setSaveState("saved");
       return;
     }
 
+    savingRef.current = true;
     setSaveState("saving");
     const groups = await layerStore.takeAllDirtyTiles();
     const totalTiles = groups.reduce((sum, group) => sum + group.tiles.length, 0);
@@ -411,6 +423,7 @@ export function MapEditor(props: MapEditorProps) {
       }
       setDirtyCount(0);
       setSaveState("saved");
+      savingRef.current = false;
       return;
     }
 
@@ -465,6 +478,9 @@ export function MapEditor(props: MapEditorProps) {
       setSaveState("error");
       props.onSaveStateChange?.("error");
       props.onError?.(err as Error);
+    } finally {
+      // 无论成功失败都要释放锁，否则后续保存会被永久跳过
+      savingRef.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adapter, mapId, readOnly, props]);
@@ -689,10 +705,11 @@ export function MapEditor(props: MapEditorProps) {
         if (label) {
           context.font = '12px "Source Han Sans SC", "Noto Sans SC", sans-serif';
           const textWidth = context.measureText(label).width;
-          context.fillStyle = "rgba(20, 18, 15, 0.8)";
-          context.fillRect(screen.x + 8, screen.y + 8, textWidth + 8, 18);
+          // 背景用纸张色、文字用亮色：浅底浅字会看不清（踩过这个坑）
+          context.fillStyle = `${PAPER_BASE}e6`;
+          context.fillRect(screen.x + 8, screen.y + 8, textWidth + 10, 18);
           context.fillStyle = theme.text;
-          context.fillText(label, screen.x + 12, screen.y + 21);
+          context.fillText(label, screen.x + 13, screen.y + 21);
         }
       }
     }
@@ -709,8 +726,9 @@ export function MapEditor(props: MapEditorProps) {
         const barHeight = 6;
         const x0 = 12;
         const y0 = cssHeight - 16;
-        context.fillStyle = "rgba(20, 18, 15, 0.72)";
-        context.fillRect(x0 - 4, y0 - barHeight - 8, Math.max(bar.pixels, 40) + 8, barHeight + 8);
+        // 比例尺条同样用纸张色底 + 亮色文字，保证在暗纸上可读
+        context.fillStyle = `${PAPER_BASE}e6`;
+        context.fillRect(x0 - 4, y0 - barHeight - 10, Math.max(bar.pixels, 40) + 8, barHeight + 10);
         context.fillStyle = theme.accent;
         context.fillRect(x0, y0 - barHeight, bar.pixels, barHeight);
         context.font = '11px "Source Han Sans SC", "Noto Sans SC", sans-serif';
@@ -2161,8 +2179,16 @@ export function MapEditor(props: MapEditorProps) {
         )}
       </div>
 
-      {/* 底部信息条 */}
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12, color: theme.textFaint }}>
+      {/* 底部信息条：文字色跟随渲染风格（手绘模式画布是暗纸，仍用亮字保持可读） */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          flexWrap: "wrap",
+          fontSize: 12,
+          color: theme.textFaint,
+        }}
+      >
         <span>
           {meta ? `${meta.board.width}×${meta.board.height}` : "—"} · 缩放 {zoomPercent}%
         </span>

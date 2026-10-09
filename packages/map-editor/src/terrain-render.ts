@@ -21,9 +21,17 @@ import {
 /** 图案格边长（屏幕像素）：纹理在屏幕上的粒度，与缩放无关 */
 const PATTERN_CELL_PX = 32;
 
-/** 纸张底色（米色）与噪点强度 */
-export const PAPER_BASE = "#e8dcc0";
-const PAPER_NOISE_ALPHA = 0.05;
+/**
+ * 纸张底色：**暗纸**（比界面底色略暖一点）。
+ *
+ * 取舍过程：编辑器整体是深色（墨色 / 暗棕）界面。最初把纸张做成亮米色，
+ * 结果"底色亮 + 界面文字浅"两边都看不清——纸的质感应当来自**纹理与装饰**，
+ * 而不是靠亮底色。因此纸张取暗暖色：与深色 UI 和谐，
+ * 地形色（海洋的深蓝、草地的绿、雪地的白）在它上面反而更清楚。
+ */
+export const PAPER_BASE = "#241f18";
+/** 噪点与污渍强度（暗底上要略强一点才看得出纸的质感） */
+const PAPER_NOISE_ALPHA = 0.07;
 
 /** 渲染模式 */
 export type RenderStyleMode = "flat" | "handdrawn";
@@ -48,25 +56,25 @@ export function createPaperTexture(size = 256): HTMLCanvasElement {
   context.fillStyle = PAPER_BASE;
   context.fillRect(0, 0, size, size);
 
-  // 细噪点：模仿纸张纤维
+  // 细噪点：模仿纸张纤维（暗底上用偏亮的纤维，才看得出纹路）
   for (let i = 0; i < size * size * 0.12; i += 1) {
     const x = Math.random() * size;
     const y = Math.random() * size;
-    const dark = Math.random() > 0.5;
-    context.fillStyle = dark
-      ? `rgba(120, 100, 70, ${PAPER_NOISE_ALPHA})`
-      : `rgba(255, 250, 235, ${PAPER_NOISE_ALPHA * 1.4})`;
+    const light = Math.random() > 0.5;
+    context.fillStyle = light
+      ? `rgba(214, 196, 158, ${PAPER_NOISE_ALPHA})`
+      : `rgba(12, 10, 8, ${PAPER_NOISE_ALPHA})`;
     context.fillRect(x, y, 1, 1);
   }
 
-  // 淡淡的污渍/折痕：几块柔和的椭圆
+  // 淡淡的污渍 / 折痕：几块柔和的椭圆（暗底上用偏亮的晕染）
   for (let i = 0; i < 6; i += 1) {
     const cx = Math.random() * size;
     const cy = Math.random() * size;
     const radius = 20 + Math.random() * 50;
     const gradient = context.createRadialGradient(cx, cy, 0, cx, cy, radius);
-    gradient.addColorStop(0, "rgba(160, 135, 95, 0.05)");
-    gradient.addColorStop(1, "rgba(160, 135, 95, 0)");
+    gradient.addColorStop(0, "rgba(196, 172, 124, 0.05)");
+    gradient.addColorStop(1, "rgba(196, 172, 124, 0)");
     context.fillStyle = gradient;
     context.beginPath();
     context.arc(cx, cy, radius, 0, Math.PI * 2);
