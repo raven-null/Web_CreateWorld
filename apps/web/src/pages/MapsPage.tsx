@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
+import { MapEditor } from "@worldmap/editor";
+import { createHttpMapHostAdapter, createIndexedDbDraftStore } from "@worldmap/editor-web";
 import { api } from "../lib/api";
 import { uploadImage } from "../lib/image-upload";
 import { showToast } from "../lib/toast";
@@ -10,102 +10,77 @@ import { showToast } from "../lib/toast";
 interface MapListItem {
   id: string;
   name: string;
-  /** image = 图片底图（走本页的 Leaflet）；canvas = 球面白板（进地图编辑器） */
+  /** image = 图片底图（旧数据，暂用简化查看器）；canvas = 球面白板（编辑器） */
   kind: string;
   imageUrl: string;
   markerCount: number;
   createdAt: number;
 }
 
-/** 地图详情（含标记） */
-interface MapDetail {
-  id: string;
-  worldId: string;
-  name: string;
-  imageUrl: string;
-  canEdit: boolean;
-  markers: MarkerItem[];
-}
-
-/** 标记 */
-interface MarkerItem {
-  id: string;
-  x: number;
-  y: number;
-  label: string;
-  entryId: string | null;
-  entryTitle: string | null;
-}
-
-/** 世界信息（本页只用到名称） */
+/** 世界信息（页面标题用） */
 interface WorldInfo {
   name: string;
 }
 
-/** 条目下拉选项 */
-interface EntryOption {
-  id: string;
-  title: string;
+/** 白板宽度的合法范围与规整粒度（与服务端 canvas 接口一致） */
+const BOARD_MIN_WIDTH = 512;
+const BOARD_MAX_WIDTH = 16384;
+const BOARD_WIDTH_STEP = 128;
+/** 白板默认宽度（方案 §5.1 已定案：2048×1024） */
+const DEFAULT_BOARD_WIDTH = 2048;
+
+/**
+ * 把用户输入的宽度规整为合法值：向上取整到 128 的倍数并夹在允许范围内。
+ * 服务端也会做一次同样的规整，这里提前对齐，避免用户看到数字跳变。
+ * @param raw 用户输入
+ * @returns 规整后的宽度
+ */
+function normalizeBoardWidth(raw: number): number {
+  const stepped = Math.ceil((Number.isFinite(raw) ? raw : DEFAULT_BOARD_WIDTH) / BOARD_WIDTH_STEP) * BOARD_WIDTH_STEP;
+  return Math.min(Math.max(stepped, BOARD_MIN_WIDTH), BOARD_MAX_WIDTH);
 }
 
 /**
- * 地图页：上传自定义地图图片，点击放置标记并关联条目。
- * 使用 Leaflet 的 CRS.Simple 图片叠加模式。
+ * 地图页 = 地图编辑器。
+ *
+ * 页面结构：地图标签（切换 / 新建）→ 编辑器本体。
+ * - 画布型地图（`kind = canvas`）：完整编辑器（笔刷绘制、图层、测量、标记、导出）
+ * - 图片型地图（`kind = image`，旧数据）：暂用简化查看器展示原图与标记，绘制能力只对画布型开放
+ *
+ * 页面保持"薄"：真正的编辑逻辑全在 `@worldmap/editor` 里，这里只做
+ * 「取数据 → 构造宿主适配器 → 注入插件」以及新建地图的表单。
  */
 export default function MapsPage() {
   const { worldId = "" } = useParams<{ worldId: string }>();
-  const navigate = useNavigate();
 
   const [world, setWorld] = useState<WorldInfo | null>(null);
   const [maps, setMaps] = useState<MapListItem[]>([]);
   const [activeMapId, setActiveMapId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<MapDetail | null>(null);
-  const [entries, setEntries] = useState<EntryOption[]>([]);
   const [error, setError] = useState("");
 
   // 新建地图
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
+  /** 底图方式：空白画布（推荐）或上传图片 */
+  const [newKind, setNewKind] = useState<"canvas" | "image">("canvas");
+  const [newBoardWidth, setNewBoardWidth] = useState(DEFAULT_BOARD_WIDTH);
   const [newFile, setNewFile] = useState<File | null>(null);
   const [creating, setCreating] = useState(false);
 
-  // 添加标记
-  const [addMode, setAddMode] = useState(false);
-  const [pendingMarker, setPendingMarker] = useState<{ x: number; y: number } | null>(null);
-  const [markerLabel, setMarkerLabel] = useState("");
-  const [markerEntryId, setMarkerEntryId] = useState("");
+  /** 编辑器实例：切换地图时重建（避免残留上一张图的状态） */
+  const editorKeyRef = useRef(0);
 
-  // 编辑标记
-  const [editingMarker, setEditingMarker] = useState<MarkerItem | null>(null);
-
-  const mapContainerRef = useRef<HTMLDivElement | null>(null);
-  const leafletRef = useRef<L.Map | null>(null);
-  const layerRef = useRef<L.LayerGroup | null>(null);
-  const imageSizeRef = useRef({ width: 1000, height: 1000 });
-  const addModeRef = useRef(false);
-  const canEditRef = useRef(false);
-
-  useEffect(() => {
-    addModeRef.current = addMode;
-  }, [addMode]);
-
-  /** 加载地图列表与条目选项 */
+  /** 拉取地图列表 */
   const loadLists = useCallback(async () => {
-    const [list, entryList] = await Promise.all([
-      api<MapListItem[]>(`/api/worlds/${worldId}/maps`),
-      api<EntryOption[]>(`/api/worlds/${worldId}/entries`),
-    ]);
+    const list = await api<MapListItem[]>(`/api/worlds/${worldId}/maps`);
     setMaps(list);
-    setEntries(entryList);
-    setActiveMapId((current) => current ?? list[0]?.id ?? null);
+    setActiveMapId((current) => {
+      if (current && list.some((item) => item.id === current)) {
+        return current;
+      }
+      return list[0]?.id ?? null;
+    });
   }, [worldId]);
-
-  /** 加载当前地图详情 */
-  const loadDetail = useCallback(async (mapId: string) => {
-    const data = await api<MapDetail>(`/api/maps/${mapId}`);
-    setDetail(data);
-    canEditRef.current = data.canEdit;
-  }, []);
 
   // 初始加载
   useEffect(() => {
@@ -115,160 +90,52 @@ export default function MapsPage() {
     loadLists().catch((err: Error) => setError(err.message));
   }, [worldId, loadLists]);
 
-  // 切换地图时加载详情
+  // 列表为空时自动打开新建表单（新世界进地图页的第一个动作必然是建图）
   useEffect(() => {
-    if (!activeMapId) {
-      setDetail(null);
-      return;
+    if (!error && maps.length === 0) {
+      setShowCreate(true);
     }
-    loadDetail(activeMapId).catch((err: Error) => setError(err.message));
-  }, [activeMapId, loadDetail]);
+  }, [maps.length, error]);
 
-  /** 重建 Leaflet 地图（地图切换时） */
-  useEffect(() => {
-    if (!detail || !mapContainerRef.current) {
-      return;
-    }
-    leafletRef.current?.remove();
-    leafletRef.current = null;
-    layerRef.current = null;
+  const activeMap = maps.find((item) => item.id === activeMapId) ?? null;
+  const isCanvas = activeMap?.kind === "canvas";
 
-    const image = new Image();
-    image.onload = () => {
-      const width = image.naturalWidth;
-      const height = image.naturalHeight;
-      imageSizeRef.current = { width, height };
-      if (!mapContainerRef.current) {
-        return;
-      }
+  // 适配器与草稿存储：切图时重建，保证不会把上一张图的缓存带过来
+  const adapter = useMemo(() => createHttpMapHostAdapter(), [activeMapId]);
+  const drafts = useMemo(() => createIndexedDbDraftStore(), []);
 
-      const map = L.map(mapContainerRef.current, {
-        crs: L.CRS.Simple,
-        minZoom: -4,
-        maxZoom: 3,
-        attributionControl: false,
-      });
-      const bounds = L.latLngBounds([0, 0], [height, width]);
-      L.imageOverlay(detail.imageUrl, bounds).addTo(map);
-      map.fitBounds(bounds);
-      map.setMaxBounds(bounds.pad(0.3));
-
-      const layer = L.layerGroup().addTo(map);
-      leafletRef.current = map;
-      layerRef.current = layer;
-
-      // 点击空白处：添加标记模式下记录坐标
-      map.on("click", (event: L.LeafletMouseEvent) => {
-        if (!addModeRef.current || !canEditRef.current) {
-          return;
-        }
-        const x = event.latlng.lng / width;
-        const y = 1 - event.latlng.lat / height;
-        if (x < 0 || x > 1 || y < 0 || y > 1) {
-          return;
-        }
-        setMarkerLabel("");
-        setMarkerEntryId("");
-        setPendingMarker({ x, y });
-      });
-    };
-    image.src = detail.imageUrl;
-
-    return () => {
-      leafletRef.current?.remove();
-      leafletRef.current = null;
-      layerRef.current = null;
-    };
-  }, [detail?.id, detail?.imageUrl]);
-
-  // 标记变化时重绘（不重建地图，保持视野）
-  useEffect(() => {
-    const layer = layerRef.current;
-    const map = leafletRef.current;
-    if (!layer || !map || !detail) {
-      return;
-    }
-    layer.clearLayers();
-    const { width, height } = imageSizeRef.current;
-
-    for (const marker of detail.markers) {
-      const latlng = L.latLng(height * (1 - marker.y), width * marker.x);
-      const circle = L.circleMarker(latlng, {
-        radius: 7,
-        color: "#c9a15c",
-        weight: 2,
-        fillColor: "#c9a15c",
-        fillOpacity: 0.65,
-      });
-      circle.bindTooltip(marker.label || "标记", { direction: "top" });
-      circle.on("click", (event: L.LeafletMouseEvent) => {
-        L.DomEvent.stopPropagation(event);
-      });
-
-      // 气泡内容：标题 + 关联条目 + 操作按钮
-      const container = document.createElement("div");
-      container.className = "map-popup";
-      const title = document.createElement("strong");
-      title.textContent = marker.label || "未命名标记";
-      container.appendChild(title);
-      if (marker.entryId) {
-        const link = document.createElement("a");
-        link.textContent = marker.entryTitle ?? "关联条目";
-        link.href = `/w/${detail.worldId}/entries/${marker.entryId}`;
-        link.onclick = (clickEvent) => {
-          clickEvent.preventDefault();
-          navigate(`/w/${detail.worldId}/entries/${marker.entryId}`);
-        };
-        container.appendChild(link);
-      }
-      if (detail.canEdit) {
-        const actions = document.createElement("div");
-        actions.className = "map-popup-actions";
-        const editButton = document.createElement("button");
-        editButton.type = "button";
-        editButton.textContent = "编辑";
-        editButton.className = "btn ghost small";
-        editButton.onclick = () => {
-          setEditingMarker(marker);
-          map.closePopup();
-        };
-        const deleteButton = document.createElement("button");
-        deleteButton.type = "button";
-        deleteButton.textContent = "删除";
-        deleteButton.className = "btn ghost small";
-        deleteButton.onclick = () => {
-          void (async () => {
-            if (!window.confirm("确定删除这个标记？")) {
-              return;
-            }
-            try {
-              await api(`/api/markers/${marker.id}`, { method: "DELETE" });
-              map.closePopup();
-              await loadDetail(detail.id);
-              await loadLists();
-            } catch (err) {
-              showToast("error", (err as Error).message);
-            }
-          })();
-        };
-        actions.append(editButton, deleteButton);
-        container.appendChild(actions);
-      }
-      circle.bindPopup(container);
-      circle.addTo(layer);
-    }
-  }, [detail, navigate, loadDetail, loadLists]);
-
-  /** 创建地图：先上传图片再保存 */
-  const handleCreateMap = async (event: FormEvent) => {
+  /**
+   * 创建地图：按底图方式分流。
+   * @param event 表单提交事件
+   */
+  const handleCreateMap = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!newName.trim() || !newFile) {
-      showToast("warning", "请填写地图名称并选择图片");
+    if (!newName.trim()) {
+      showToast("warning", "请填写地图名称");
+      return;
+    }
+    if (newKind === "image" && !newFile) {
+      showToast("warning", "请选择地图图片");
       return;
     }
     setCreating(true);
     try {
-      const uploaded = await uploadImage(newFile, 4096);
+      if (newKind === "canvas") {
+        // 空白画布：宽度由服务端规整为 128 的倍数，高度自动取一半（2:1）
+        const created = await api<{ id: string }>(`/api/worlds/${worldId}/maps/canvas`, {
+          method: "POST",
+          body: { name: newName.trim(), width: normalizeBoardWidth(newBoardWidth) },
+        });
+        showToast("success", "画布已创建");
+        setShowCreate(false);
+        setNewName("");
+        editorKeyRef.current += 1;
+        await loadLists();
+        setActiveMapId(created.id);
+        return;
+      }
+
+      const uploaded = await uploadImage(newFile as File, 4096);
       const data = await api<{ id: string }>(`/api/worlds/${worldId}/maps`, {
         method: "POST",
         body: { name: newName.trim(), imageKey: uploaded.key },
@@ -277,6 +144,7 @@ export default function MapsPage() {
       setShowCreate(false);
       setNewName("");
       setNewFile(null);
+      editorKeyRef.current += 1;
       await loadLists();
       setActiveMapId(data.id);
     } catch (err) {
@@ -286,95 +154,18 @@ export default function MapsPage() {
     }
   };
 
-  /** 提交新标记 */
-  const handleCreateMarker = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!detail || !pendingMarker) {
+  /** 切换到某张地图 */
+  const selectMap = (mapId: string): void => {
+    if (mapId === activeMapId) {
       return;
     }
-    try {
-      await api(`/api/maps/${detail.id}/markers`, {
-        method: "POST",
-        body: { x: pendingMarker.x, y: pendingMarker.y, label: markerLabel.trim(), entryId: markerEntryId || null },
-      });
-      setPendingMarker(null);
-      setAddMode(false);
-      await loadDetail(detail.id);
-      await loadLists();
-      showToast("success", "标记已添加");
-    } catch (err) {
-      showToast("error", (err as Error).message);
-    }
+    editorKeyRef.current += 1;
+    setActiveMapId(mapId);
   };
-
-  /** 保存标记编辑 */
-  const handleUpdateMarker = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!detail || !editingMarker) {
-      return;
-    }
-    try {
-      await api(`/api/markers/${editingMarker.id}`, {
-        method: "PATCH",
-        body: { label: markerLabel.trim(), entryId: markerEntryId || null },
-      });
-      setEditingMarker(null);
-      await loadDetail(detail.id);
-      showToast("success", "标记已更新");
-    } catch (err) {
-      showToast("error", (err as Error).message);
-    }
-  };
-
-  /** 重命名地图 */
-  const handleRenameMap = async () => {
-    if (!detail) {
-      return;
-    }
-    const name = window.prompt("新的地图名称", detail.name);
-    if (!name?.trim()) {
-      return;
-    }
-    try {
-      await api(`/api/maps/${detail.id}`, { method: "PATCH", body: { name: name.trim() } });
-      await loadLists();
-      await loadDetail(detail.id);
-    } catch (err) {
-      showToast("error", (err as Error).message);
-    }
-  };
-
-  /** 删除地图 */
-  const handleDeleteMap = async () => {
-    if (!detail || !window.confirm(`确定删除地图「${detail.name}」及其全部标记？`)) {
-      return;
-    }
-    try {
-      await api(`/api/maps/${detail.id}`, { method: "DELETE" });
-      setDetail(null);
-      setActiveMapId(null);
-      await loadLists();
-      showToast("success", "地图已删除");
-    } catch (err) {
-      showToast("error", (err as Error).message);
-    }
-  };
-
-  // 打开编辑标记表单时预填字段
-  useEffect(() => {
-    if (editingMarker) {
-      setMarkerLabel(editingMarker.label);
-      setMarkerEntryId(editingMarker.entryId ?? "");
-    }
-  }, [editingMarker]);
 
   if (error) {
     return <div className="notice error">{error}</div>;
   }
-
-  const markerFormOpen = pendingMarker !== null || editingMarker !== null;
-  // 当前选中的是画布型地图时，给出「进地图编辑器」的入口
-  const activeIsCanvas = maps.find((item) => item.id === activeMapId)?.kind === "canvas";
 
   return (
     <>
@@ -384,51 +175,48 @@ export default function MapsPage() {
             地图
           </h1>
           <p className="page-subtitle" style={{ marginBottom: 0 }}>
-            {world?.name ?? ""}
+            {world?.name ?? ""} · 球面白板编辑器
           </p>
         </div>
-        {detail?.canEdit && (
-          <div className="entry-view-actions">
-            <button
-              type="button"
-              className={`btn${addMode ? "" : " ghost"}`}
-              onClick={() => {
-                setAddMode((value) => !value);
-                setPendingMarker(null);
-              }}
-            >
-              {addMode ? "点地图放置标记…" : "添加标记"}
-            </button>
-            <button type="button" className="btn ghost" onClick={() => void handleRenameMap()}>
-              重命名地图
-            </button>
-            <button type="button" className="btn ghost" onClick={() => void handleDeleteMap()}>
-              删除地图
-            </button>
-          </div>
-        )}
+        <div className="entry-view-actions">
+          <button type="button" className="btn small" onClick={() => setShowCreate(true)}>
+            + 新建地图
+          </button>
+        </div>
       </div>
 
-      <div className="map-tabs">
-        {maps.map((map) => (
-          <button
-            key={map.id}
-            type="button"
-            className={`tag-chip${activeMapId === map.id ? " active" : ""}`}
-            onClick={() => setActiveMapId(map.id)}
-          >
-            {map.name}（{map.markerCount}）
-          </button>
-        ))}
-        <button type="button" className="btn ghost small" onClick={() => setShowCreate(true)}>
-          + 新建地图
-        </button>
-        {activeIsCanvas && activeMapId && (
-          <Link to={`/maps/${activeMapId}/edit`} className="btn small">
-            打开地图编辑器
-          </Link>
-        )}
-      </div>
+      {/* 地图标签：切换地图 */}
+      {maps.length > 0 && (
+        <div className="map-tabs">
+          {maps.map((map) => (
+            <button
+              key={map.id}
+              type="button"
+              className={`tag-chip${activeMapId === map.id ? " active" : ""}`}
+              onClick={() => selectMap(map.id)}
+            >
+              {map.name}
+              {map.kind === "canvas" ? " · 画布" : ""}（{map.markerCount}）
+            </button>
+          ))}
+        </div>
+      )}
+
+      {activeMap && isCanvas && (
+        <MapEditor
+          key={`${activeMapId}-${editorKeyRef.current}`}
+          mapId={activeMap.id}
+          adapter={adapter}
+          drafts={drafts}
+          onError={(err) => showToast("error", err.message)}
+        />
+      )}
+
+      {activeMap && !isCanvas && <ImageMapViewer map={activeMap} />}
+
+      {maps.length === 0 && !showCreate && (
+        <div className="empty">还没有地图，点「+ 新建地图」开始</div>
+      )}
 
       {showCreate && (
         <div className="modal-overlay" onClick={() => setShowCreate(false)}>
@@ -445,106 +233,117 @@ export default function MapsPage() {
                   required
                 />
               </div>
+
               <div className="field">
-                <label htmlFor="mapFile">地图图片（自动压缩转 WebP，建议 4096px 以内）</label>
-                <input
-                  id="mapFile"
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => setNewFile(event.target.files?.[0] ?? null)}
-                  required
-                />
+                <span style={{ display: "block", marginBottom: 6 }}>底图方式</span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    type="button"
+                    className={newKind === "canvas" ? "btn small" : "btn ghost small"}
+                    onClick={() => setNewKind("canvas")}
+                  >
+                    空白画布（绘制地形）
+                  </button>
+                  <button
+                    type="button"
+                    className={newKind === "image" ? "btn small" : "btn ghost small"}
+                    onClick={() => setNewKind("image")}
+                  >
+                    上传图片底图
+                  </button>
+                </div>
               </div>
+
+              {newKind === "canvas" ? (
+                <div className="field">
+                  <label htmlFor="boardWidth">白板宽度（高度自动为一半）</label>
+                  <input
+                    id="boardWidth"
+                    type="number"
+                    min={BOARD_MIN_WIDTH}
+                    max={BOARD_MAX_WIDTH}
+                    step={BOARD_WIDTH_STEP}
+                    value={newBoardWidth}
+                    onChange={(event) => setNewBoardWidth(Number(event.target.value))}
+                  />
+                  <p style={{ marginTop: 4, fontSize: 12, color: "#a89c88", lineHeight: 1.6 }}>
+                    将创建 {normalizeBoardWidth(newBoardWidth)}×{normalizeBoardWidth(newBoardWidth) / 2} 的球面白板：
+                    用笔刷绘制地形、放标记关联条目，可测量距离与面积、导出图片。宽度越大越精细，数据量也越大。
+                  </p>
+                </div>
+              ) : (
+                <div className="field">
+                  <label htmlFor="mapFile">地图图片（自动压缩转 WebP，建议 4096px 以内）</label>
+                  <input
+                    id="mapFile"
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => setNewFile(event.target.files?.[0] ?? null)}
+                  />
+                  <p style={{ marginTop: 4, fontSize: 12, color: "#a89c88", lineHeight: 1.6 }}>
+                    图片底图只能查看与放标记（旧版地图的形态）；要在图上绘制地形，请选「空白画布」。
+                  </p>
+                </div>
+              )}
+
               <div style={{ display: "flex", gap: 10 }}>
                 <button type="submit" className="btn" disabled={creating}>
-                  {creating ? "上传中…" : "创建地图"}
-                </button>
-                <button type="button" className="btn ghost" onClick={() => setShowCreate(false)}>
-                  取消
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {maps.length === 0 && !showCreate && (
-        <div className="empty">
-          还没有地图，点「+ 新建地图」上传你的世界地图
-        </div>
-      )}
-
-      {detail && (
-        <div className="map-view" ref={mapContainerRef} />
-      )}
-
-      {detail && detail.markers.length === 0 && (
-        <div className="notice" style={{ marginTop: 10 }}>
-          点击地图上的位置放置标记，标记可以关联到条目。
-        </div>
-      )}
-
-      {markerFormOpen && detail && (
-        <div
-          className="modal-overlay"
-          onClick={() => {
-            setPendingMarker(null);
-            setEditingMarker(null);
-          }}
-        >
-          <div className="modal" onClick={(clickEvent) => clickEvent.stopPropagation()}>
-            <h2 className="section-title">{editingMarker ? "编辑标记" : "添加标记"}</h2>
-            <form className="form" style={{ maxWidth: "none" }} onSubmit={editingMarker ? handleUpdateMarker : handleCreateMarker}>
-              <div className="field">
-                <label htmlFor="markerLabel">标记名称</label>
-                <input
-                  id="markerLabel"
-                  value={markerLabel}
-                  onChange={(event) => setMarkerLabel(event.target.value)}
-                  placeholder="如：银月城"
-                  required
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="markerEntry">关联条目（可选）</label>
-                <select
-                  id="markerEntry"
-                  value={markerEntryId}
-                  onChange={(event) => setMarkerEntryId(event.target.value)}
-                >
-                  <option value="">不关联</option>
-                  {entries.map((entry) => (
-                    <option key={entry.id} value={entry.id}>
-                      {entry.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button type="submit" className="btn">
-                  保存
+                  {creating ? "处理中…" : "创建"}
                 </button>
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={() => {
-                    setPendingMarker(null);
-                    setEditingMarker(null);
-                  }}
+                  onClick={() => setShowCreate(false)}
+                  disabled={maps.length === 0}
                 >
-                  取消
+                  {maps.length === 0 ? "请先创建一张地图" : "取消"}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
-
-      <div style={{ marginTop: 14 }}>
-        <Link to={`/w/${worldId}/entries`} className="btn ghost small">
-          返回条目列表
-        </Link>
-      </div>
     </>
+  );
+}
+
+/**
+ * 图片型地图的简化查看器（旧数据用）。
+ *
+ * 保留原图预览与标记计数：旧地图仍可查看，但绘制类能力只对画布型开放。
+ * @param props.map 地图项
+ * @returns 查看器节点
+ */
+function ImageMapViewer(props: { map: MapListItem }): React.ReactElement {
+  const { map } = props;
+  return (
+    <div>
+      <div className="notice" style={{ marginBottom: 10 }}>
+        这是旧版「图片底图」地图：可查看原图与标记位置；要绘制地形请新建「空白画布」地图。
+      </div>
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          overflow: "hidden",
+          background: "var(--bg-card)",
+        }}
+      >
+        {map.imageUrl ? (
+          <img
+            src={map.imageUrl}
+            alt={map.name}
+            style={{ display: "block", width: "100%", height: "auto" }}
+          />
+        ) : (
+          <div style={{ padding: 40, textAlign: "center", color: "var(--text-faint)" }}>
+            地图图片缺失
+          </div>
+        )}
+      </div>
+      <p style={{ marginTop: 8, fontSize: 12, color: "var(--text-faint)" }}>
+        {map.name} · 标记 {map.markerCount} 个
+      </p>
+    </div>
   );
 }
