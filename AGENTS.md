@@ -59,8 +59,10 @@ packages/
 
 ## 生产环境
 
-- 地址：https://create-world.wyz15728790233.workers.dev
+- 地址：https://ravennull.monster（自定义域名，绑定在 Cloudflare Worker 上）
+- 备用地址：https://create-world.wyz15728790233.workers.dev（Worker 默认地址，与自定义域名双活）
 - 架构：单个 Worker 同时提供 API 与前端静态资源（同域）；数据在 D1，图片在 KV
+- **`BETTER_AUTH_URL` 必须与当前对外域名一致**，否则浏览器会拒收会话 cookie（现象：页面能打开但登录不上）
 - 生产密钥（BETTER_AUTH_SECRET / MIGRATE_SECRET / AI_KEY_SECRET / ADMIN_USERNAMES / BOOTSTRAP_INVITE_CODE / BETTER_AUTH_URL）
   通过 `wrangler secret bulk` 管理，不写入仓库
 - 修改代码后执行 `pnpm deploy` 即发布；数据库结构变更先本地加迁移文件，再执行远程迁移命令
