@@ -33,7 +33,15 @@ packages/
   core/     共用领域逻辑：数据模型、双向链接、版本、权限
   storage/  存储适配层（平台 API / SQLite / IndexedDB）
   sync/     同步适配层（平台 API / WebDAV）
+  map-*/    地图编辑器插件（内核 / 组件 / 平台实现）
+assets/     主站素材：品牌、界面、插图、演示图（详细规范见 assets/README.md）
+docs/       方案与设计文档
 ```
+
+**素材放哪**（两处，按「换个项目还能不能用」判断，细则见 `docs/方案.md` §11.1）：
+- 主站自己的（Logo、插图、演示底图）→ 仓库根 `assets/`
+- 地图编辑器渲染要用的（地形纹理、编辑器图标、3D 贴图）→ `packages/map-editor/assets/`，随插件包分发
+- 每份素材都要在对应素材库的 `README.md` 清单里登记来源与许可证；来源不明的一律不收
 
 ## 关键技术与约束
 
