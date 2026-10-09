@@ -50,6 +50,15 @@ importers:
       '@tiptap/starter-kit':
         specifier: ^3.31.4
         version: 3.31.4
+      '@worldmap/core':
+        specifier: workspace:*
+        version: link:../../packages/map-core
+      '@worldmap/editor':
+        specifier: workspace:*
+        version: link:../../packages/map-editor
+      '@worldmap/editor-web':
+        specifier: workspace:*
+        version: link:../../packages/map-editor-web
       better-auth:
         specifier: ^1.7.7
         version: 1.7.7(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(vitest@3.2.7(lightningcss@1.33.0))

@@ -1,5 +1,5 @@
 /**
- * 地图编辑器插件本体的出口。
+ * `@worldmap/editor` 的出口。
  *
  * 约束（详见 docs/地图编辑器方案.md §15.1，由 scripts/check-boundaries.mjs 强制检查）：
  * - 不 import 主站任何模块（@create-world/*、apps/web 的 src/*）
@@ -9,3 +9,5 @@
  */
 export * from "./adapter";
 export * from "./props";
+export * from "./theme";
+export { MapEditor } from "./MapEditor";

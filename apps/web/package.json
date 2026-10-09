@@ -11,6 +11,9 @@
   },
   "dependencies": {
     "@create-world/core": "workspace:*",
+    "@worldmap/core": "workspace:*",
+    "@worldmap/editor": "workspace:*",
+    "@worldmap/editor-web": "workspace:*",
     "@tiptap/core": "^3.31.4",
     "@tiptap/pm": "^3.31.4",
     "@tiptap/react": "^3.31.4",

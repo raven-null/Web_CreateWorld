@@ -7,6 +7,7 @@
  */
 export * from "./types";
 export * from "./stats";
+export * from "./contract";
 export * from "./cwt1";
 export * from "./projection";
 export * from "./scale";

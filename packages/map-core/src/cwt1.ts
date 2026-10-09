@@ -227,3 +227,44 @@ export const DEFAULT_TERRAIN_PALETTE: TerrainBrush[] = [
   { index: 6, key: "mountain", name: "山地", color: "#7b6a58" },
   { index: 7, key: "snow", name: "雪地", color: "#d8dfe3" },
 ];
+
+/**
+ * 把调色板转成 Uint32 查表，供渲染时一次写入像素（避免每像素解析颜色字符串）。
+ *
+ * 返回值的字节序按**小端**排布：`0xAABBGGRR`，
+ * 这样配合 `Uint32Array` 视图写入 RGBA 缓冲时，内存里正好是 [R, G, B, A]。
+ *
+ * @param palette 调色板
+ * @returns 下标 → 打包颜色
+ */
+export function terrainPaletteToUint32(palette: TerrainBrush[]): number[] {
+  const table: number[] = [];
+  for (const brush of palette) {
+    const rgb = parseHexColor(brush.color);
+    // 预留 alpha 位（写入时再补 0xff）
+    table[brush.index] = ((rgb[2] & 0xff) << 16) | ((rgb[1] & 0xff) << 8) | (rgb[0] & 0xff);
+  }
+  return table;
+}
+
+/**
+ * 解析 `#RGB` / `#RRGGBB` 颜色为 RGB 三元组。
+ * @param hex 颜色文本
+ * @returns [R, G, B]；无法解析时返回黑色
+ */
+function parseHexColor(hex: string): [number, number, number] {
+  const text = hex.trim().replace(/^#/, "");
+  if (text.length === 3) {
+    const r = Number.parseInt(`${text[0]}${text[0]}`, 16);
+    const g = Number.parseInt(`${text[1]}${text[1]}`, 16);
+    const b = Number.parseInt(`${text[2]}${text[2]}`, 16);
+    return [r || 0, g || 0, b || 0];
+  }
+  if (text.length >= 6) {
+    const r = Number.parseInt(text.slice(0, 2), 16);
+    const g = Number.parseInt(text.slice(2, 4), 16);
+    const b = Number.parseInt(text.slice(4, 6), 16);
+    return [r || 0, g || 0, b || 0];
+  }
+  return [0, 0, 0];
+}

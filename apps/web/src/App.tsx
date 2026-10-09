@@ -8,6 +8,7 @@ import EntryEditPage from "./pages/EntryEditPage";
 import EntryVersionsPage from "./pages/EntryVersionsPage";
 import EntryViewPage from "./pages/EntryViewPage";
 import LoginPage from "./pages/LoginPage";
+import MapEditorPage from "./pages/MapEditorPage";
 import MapsPage from "./pages/MapsPage";
 import MyWorldsPage from "./pages/MyWorldsPage";
 import NewWorldPage from "./pages/NewWorldPage";
@@ -48,6 +49,8 @@ export default function App() {
           </Route>
           {/* 条目编辑页独立全宽（写作专注，不套世界侧边栏） */}
           <Route path="w/:worldId/entries/:entryId/edit" element={<EntryEditPage />} />
+          {/* 地图编辑器同样独立全宽：它是全屏工作区（方案 §12.4） */}
+          <Route path="maps/:mapId/edit" element={<MapEditorPage />} />
           <Route path="admin" element={<AdminPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
