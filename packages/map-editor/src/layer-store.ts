@@ -11,6 +11,7 @@
  */
 import type { MapHostAdapter, MapLayer, TerrainBrush } from "@worldmap/core";
 import { terrainPaletteToUint32 } from "@worldmap/core";
+import { bakeHandDrawnLayer, createPaperTexture, type RenderStyleMode } from "./terrain-render";
 import {
   RasterTileStore,
   TILE_SIZE,
@@ -355,7 +356,8 @@ export class MapLayerStore {
     void pixelRatio;
     context.imageSmoothingEnabled = zoom < 1;
     for (const layer of this.visibleRasterLayers()) {
-      const bitmap = this.bitmapOf(layer.id);
+      // 按当前模式取位图：纯色 or 手绘（图案 + 描边 + 装饰）
+      const bitmap = this.renderBitmapOf(layer.id);
       if (!bitmap) {
         continue;
       }
@@ -388,6 +390,88 @@ export class MapLayerStore {
 
   /** 离屏位图：layerId → canvas */
   private readonly bitmaps = new Map<string, HTMLCanvasElement>();
+  /** 手绘风格位图缓存：layerId → canvas（模式为 handdrawn 时用） */
+  private readonly handDrawnBitmaps = new Map<string, HTMLCanvasElement>();
+  /** 纸张贴图（所有图层共用一张，平铺） */
+  private paperTexture: HTMLCanvasElement | null = null;
+  /** 当前渲染模式 */
+  private styleMode: RenderStyleMode = "flat";
+
+  /**
+   * 设置渲染模式。
+   * 切换到「手绘图案」时清空手绘缓存，下一次绘制会按需重烘。
+   * @param mode 渲染模式
+   */
+  setStyleMode(mode: RenderStyleMode): void {
+    if (this.styleMode === mode) {
+      return;
+    }
+    this.styleMode = mode;
+    if (mode === "flat") {
+      this.handDrawnBitmaps.clear();
+    }
+  }
+
+  /** 当前渲染模式 */
+  get currentStyleMode(): RenderStyleMode {
+    return this.styleMode;
+  }
+
+  /** 取纸张贴图（惰性创建，全部图层共用） */
+  private paper(): HTMLCanvasElement {
+    if (!this.paperTexture) {
+      this.paperTexture = createPaperTexture();
+    }
+    return this.paperTexture;
+  }
+
+  /**
+   * 取某图层用于渲染的位图：按当前模式选择「纯色位图」或「手绘位图」。
+   * @param layerId 图层 id
+   * @returns 位图；图层不存在时返回 null
+   */
+  renderBitmapOf(layerId: string): HTMLCanvasElement | null {
+    const store = this.storeOf(layerId);
+    if (!store) {
+      return null;
+    }
+    if (this.styleMode === "handdrawn") {
+      const cached = this.handDrawnBitmaps.get(layerId);
+      if (cached) {
+        return cached;
+      }
+      // 手绘位图是整幅烘的（图案 + 描边 + 装饰），编辑后一次性重烘
+      const baked = bakeHandDrawnLayer(store.indices, store.width, store.height, store.palette, this.paper());
+      this.handDrawnBitmaps.set(layerId, baked);
+      return baked;
+    }
+    return this.bitmapOf(layerId);
+  }
+
+  /**
+   * 编辑某图层后刷新它的渲染位图。
+   *
+   * 纯色模式按矩形局部更新（快）；手绘模式必须整幅重烘（图案与装饰依赖邻格）。
+   *
+   * @param layerId 图层 id
+   * @param rect 脏矩形
+   */
+  refreshRenderBitmap(layerId: string, rect: PixelRect): void {
+    if (this.styleMode === "handdrawn") {
+      this.handDrawnBitmaps.delete(layerId);
+      return;
+    }
+    this.refreshBitmap(layerId, rect);
+  }
+
+  /** 重画所有图层的渲染位图（撤销、显隐变化、模式切换后调用） */
+  redrawAllRenderBitmaps(): void {
+    if (this.styleMode === "handdrawn") {
+      this.handDrawnBitmaps.clear();
+      return;
+    }
+    this.redrawAllBitmaps();
+  }
 }
 
 /**

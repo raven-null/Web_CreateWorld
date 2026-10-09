@@ -10,6 +10,7 @@
  */
 import { terrainPaletteToUint32, type TerrainBrush, type TerrainBrush as Palette } from "@worldmap/core";
 import { equatorCircumferenceKm, kilometersPerPixelLon } from "@worldmap/core";
+import { bakeHandDrawnLayer, createPaperTexture } from "./terrain-render";
 
 /** 单文件体积上限（与主站图片接口一致：8MB） */
 export const MAX_EXPORT_BYTES = 8 * 1024 * 1024;
@@ -31,6 +32,10 @@ export interface ExportImageOptions {
   radiusKm?: number;
   /** 输出倍率（1 = 原分辨率；0.5 = 一半） */
   scale?: number;
+  /** 渲染风格：简约色块 / 手绘图案（导出应与屏幕所见一致） */
+  styleMode?: "flat" | "handdrawn";
+  /** 手绘风格用的纸张贴图（不传则临时生成一张） */
+  paper?: HTMLCanvasElement;
 }
 
 /** 导出结果 */
@@ -61,25 +66,39 @@ export async function exportBoardImage(options: ExportImageOptions): Promise<Exp
     throw new Error("当前环境不支持画布导出");
   }
 
-  // 底：透明区域用深色底，避免导出后出现大片透明（多数看图工具显示为黑块）
-  context.fillStyle = "#0f1a24";
-  context.fillRect(0, 0, width, height);
-
-  // 地形：按 1:1（缩放时用 drawImage 从原尺寸位图缩放，避免逐像素重采样开销）
-  const source = document.createElement("canvas");
-  source.width = options.width;
-  source.height = options.height;
-  const sourceContext = source.getContext("2d");
-  if (!sourceContext) {
-    throw new Error("当前环境不支持画布导出");
+  // 底：手绘模式自带纸张底，纯色模式用深色底避免透明区域显示为黑块
+  if (options.styleMode !== "handdrawn") {
+    context.fillStyle = "#0f1a24";
+    context.fillRect(0, 0, width, height);
   }
-  sourceContext.putImageData(
-    buildImageData(options.indices, options.width, options.height, options.palette),
-    0,
-    0,
-  );
-  context.imageSmoothingEnabled = scale < 1;
-  context.drawImage(source, 0, 0, width, height);
+
+  // 地形：手绘模式走「图案 + 描边 + 装饰」的整幅烘焙，纯色模式走逐像素取色
+  if (options.styleMode === "handdrawn") {
+    const baked = bakeHandDrawnLayer(
+      options.indices,
+      options.width,
+      options.height,
+      options.palette,
+      options.paper ?? createPaperTexture(),
+    );
+    context.imageSmoothingEnabled = scale < 1;
+    context.drawImage(baked, 0, 0, width, height);
+  } else {
+    const source = document.createElement("canvas");
+    source.width = options.width;
+    source.height = options.height;
+    const sourceContext = source.getContext("2d");
+    if (!sourceContext) {
+      throw new Error("当前环境不支持画布导出");
+    }
+    sourceContext.putImageData(
+      buildImageData(options.indices, options.width, options.height, options.palette),
+      0,
+      0,
+    );
+    context.imageSmoothingEnabled = scale < 1;
+    context.drawImage(source, 0, 0, width, height);
+  }
 
   if (options.includeGraticule !== false) {
     drawGraticule(context, width, height);

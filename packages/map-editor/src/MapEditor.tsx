@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 地图编辑器插件的主组件：2D 画布 + 地形绘制。
  *
  * 设计约束（方案 §15.1，由 scripts/check-boundaries.mjs 强制）：
@@ -21,7 +21,6 @@ import {
   kilometersPerPixelLon,
   pixelToLonLat,
   scaleBar,
-  terrainPaletteToUint32,
   type BoardSpec,
   type GeoPoint,
   type MapEditorProps,
@@ -50,6 +49,7 @@ import { LayerPanel } from "./panels/LayerPanel";
 import { MarkerStore, type CanvasMarker } from "./marker-store";
 import { computeRasterStats, measurePolyline, type MeasureResult, type RasterStats } from "./measure";
 import { describeResize, normalizeBoardWidth, resampleNearest } from "./resize";
+import { bakeHandDrawnLayer, createPaperTexture, PAPER_BASE, type RenderStyleMode } from "./terrain-render";
 import { RasterTileStore, TILE_SIZE, tileRangeOf, type PixelRect } from "./tile-store";
 import { resolveTheme, themeToCssVars } from "./theme";
 
@@ -72,9 +72,6 @@ interface Viewport {
   offsetX: number;
   offsetY: number;
 }
-
-/** 调色板查表（模块级一次生成） */
-const PALETTE_UINT32 = terrainPaletteToUint32(DEFAULT_TERRAIN_PALETTE);
 
 /**
  * 地图编辑器主组件。
@@ -147,6 +144,8 @@ export function MapEditor(props: MapEditorProps) {
   const [exporting, setExporting] = useState(false);
   /** 全屏工作区：让画布铺满页面（编辑器越长，能看到的画布越大） */
   const [fullscreen, setFullscreen] = useState(false);
+  /** 渲染风格：简约色块 / 手绘图案（方案 §8 的观感取向） */
+  const [renderStyle, setRenderStyle] = useState<RenderStyleMode>("handdrawn");
   /** 白板改尺寸面板与输入 */
   const [resizeOpen, setResizeOpen] = useState(false);
   const [resizeWidth, setResizeWidth] = useState(2048);
@@ -161,6 +160,8 @@ export function MapEditor(props: MapEditorProps) {
   const readoutRef = useRef<{ lat: number; lon: number; kmPerPixel: number; deform: number } | null>(null);
   /** 半径的最新值（给不随半径重建的回调读） */
   const radiusKmRef = useRef(6371);
+  /** 渲染风格的最新值（给不随它重建的回调读） */
+  const renderStyleRef = useRef<RenderStyleMode>("handdrawn");
   /**
    * 当前正在绘制的栅格图层 id（由图层面板切换）。
    * 绘制、撤销、吸管都以它为准；`MapLayerStore` 负责多图层的实际读写。
@@ -173,6 +174,7 @@ export function MapEditor(props: MapEditorProps) {
   brushRef.current = brush;
   metaRef.current = meta;
   radiusKmRef.current = radiusKm;
+  renderStyleRef.current = renderStyle;
 
   /**
    * 更新光标处的尺度读数（经纬度、每像素实距、横向变形倍率）。
@@ -247,7 +249,8 @@ export function MapEditor(props: MapEditorProps) {
             return;
           }
           layerStoreRef.current = layerStore;
-          layerStore.redrawAllBitmaps();
+          layerStore.setStyleMode(renderStyleRef.current);
+          layerStore.redrawAllRenderBitmaps();
           const firstLayer = layerStore.rasterLayers()[0] ?? null;
           activeLayerIdRef.current = firstLayer?.id ?? null;
           activeLayerIdStateRef.current = firstLayer?.id ?? null;
@@ -359,7 +362,7 @@ export function MapEditor(props: MapEditorProps) {
    * 多图层下不再有「唯一底图」，每个栅格图层各有一块位图。
    */
   const rebuildOffscreen = useCallback((): void => {
-    layerStoreRef.current?.redrawAllBitmaps();
+    layerStoreRef.current?.redrawAllRenderBitmaps();
   }, []);
 
   /**
@@ -372,7 +375,18 @@ export function MapEditor(props: MapEditorProps) {
     if (!layerStore || !layerId) {
       return;
     }
-    layerStore.refreshBitmap(layerId, rect);
+    layerStore.refreshRenderBitmap(layerId, rect);
+  }, []);
+
+  /** 切换渲染风格（简约色块 ↔ 手绘图案），并清掉对应缓存 */
+  const handleToggleRenderStyle = useCallback((): void => {
+    const layerStore = layerStoreRef.current;
+    const next: RenderStyleMode = renderStyleRef.current === "handdrawn" ? "flat" : "handdrawn";
+    renderStyleRef.current = next;
+    setRenderStyle(next);
+    layerStore?.setStyleMode(next);
+    layerStore?.redrawAllRenderBitmaps();
+    setHistoryTick((tick) => tick + 1);
   }, []);
 
   /** 主动保存（把各图层的脏瓦片按层分批提交给宿主） */
@@ -542,7 +556,11 @@ export function MapEditor(props: MapEditorProps) {
     const { zoom, offsetX, offsetY } = viewport;
 
     context.save();
-    context.fillStyle = theme.background;
+    // 底色：手绘模式下露出的应是纸张色（否则深色底会把手绘画面割裂开）
+    context.fillStyle =
+      renderStyleRef.current === "handdrawn" && layerStoreRef.current
+        ? PAPER_BASE
+        : theme.background;
     context.fillRect(0, 0, cssWidth, cssHeight);
 
     // 多图层合成：按 zIndex 从下到上绘制各可见图层（每层有自己的不透明度）
@@ -773,7 +791,7 @@ export function MapEditor(props: MapEditorProps) {
     }
     layerStore.writeRect(entry.layerId, entry.rect, entry.before);
     historyRef.current.confirmUndo();
-    layerStore.redrawAllBitmaps();
+    layerStore.redrawAllRenderBitmaps();
     setLayerList([...layerStore.layers]);
     setDirtyCount(layerStore.totalDirtyCount());
     setHistoryTick((tick) => tick + 1);
@@ -796,7 +814,7 @@ export function MapEditor(props: MapEditorProps) {
     }
     layerStore.writeRect(entry.layerId, entry.rect, entry.after);
     historyRef.current.confirmRedo();
-    layerStore.redrawAllBitmaps();
+    layerStore.redrawAllRenderBitmaps();
     setLayerList([...layerStore.layers]);
     setDirtyCount(layerStore.totalDirtyCount());
     setHistoryTick((tick) => tick + 1);
@@ -902,6 +920,8 @@ export function MapEditor(props: MapEditorProps) {
         includeGraticule: true,
         includeScaleBar: true,
         radiusKm,
+        styleMode: renderStyleRef.current,
+        paper: createPaperTexture(),
       });
       const extension = result.mimeType === "image/png" ? "png" : "webp";
       const blob = result.blob;
@@ -1042,7 +1062,7 @@ export function MapEditor(props: MapEditorProps) {
       if (layer.storage === "raster" && !layerStore.storeOf(layerId)) {
         // 按需载入（新增图层、或从别处改过图层配置时）
         await layerStore.load();
-        layerStore.redrawAllBitmaps();
+        layerStore.redrawAllRenderBitmaps();
       }
       const store = layerStore.storeOf(layerId);
       if (!store) {
@@ -1066,7 +1086,7 @@ export function MapEditor(props: MapEditorProps) {
     if (!layerStore) {
       return;
     }
-    layerStore.redrawAllBitmaps();
+    layerStore.redrawAllRenderBitmaps();
     setLayerList([...layerStore.layers]);
     setHistoryTick((tick) => tick + 1);
   }, []);
@@ -1640,6 +1660,12 @@ export function MapEditor(props: MapEditorProps) {
           active={fullscreen}
           label={fullscreen ? "退出全屏" : "全屏"}
           onClick={() => setFullscreen((value) => !value)}
+        />
+        <ToolButton
+          theme={theme}
+          active={renderStyle === "handdrawn"}
+          label={renderStyle === "handdrawn" ? "手绘图案" : "简约色块"}
+          onClick={handleToggleRenderStyle}
         />
         {!readOnly && (
           <ToolButton
@@ -2217,42 +2243,6 @@ function outerRect(rect: PixelRect, boardWidth: number, boardHeight: number): Pi
   const right = Math.min(boardWidth, (range.maxCol + 1) * TILE_SIZE);
   const bottom = Math.min(boardHeight, (range.maxRow + 1) * TILE_SIZE);
   return { x, y, width: right - x, height: bottom - y };
-}
-
-/**
- * 从全幅索引栅格构建某矩形的 ImageData。
- * @param indices 全幅栅格
- * @param x 起点 x
- * @param y 起点 y
- * @param width 宽
- * @param height 高
- * @param sourceWidth 全幅宽（行距）
- * @returns ImageData
- */
-function buildImageData(
-  indices: Uint8Array,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  sourceWidth: number,
-): ImageData {
-  const rgba = new Uint8ClampedArray(new ArrayBuffer(width * height * 4));
-  const view = new Uint32Array(rgba.buffer);
-  for (let row = 0; row < height; row += 1) {
-    const sourceStart = (y + row) * sourceWidth + x;
-    const targetStart = row * width;
-    for (let col = 0; col < width; col += 1) {
-      const value = indices[sourceStart + col] ?? 0;
-      if (value === 0) {
-        view[targetStart + col] = 0;
-        continue;
-      }
-      const packed = PALETTE_UINT32[value];
-      view[targetStart + col] = packed === undefined ? 0xff000000 : packed | 0xff000000;
-    }
-  }
-  return new ImageData(rgba, width, height);
 }
 
 /**

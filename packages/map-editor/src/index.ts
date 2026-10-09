@@ -16,6 +16,8 @@ export * from "./history";
 export * from "./marker-store";
 export * from "./measure";
 export * from "./resize";
+export * from "./terrain-render";
+export * from "./terrain-style";
 export * from "./tile-store";
 export * from "./panels/LayerPanel";
 export { MapEditor } from "./MapEditor";
