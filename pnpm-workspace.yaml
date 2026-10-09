@@ -2,11 +2,11 @@ packages:
   - apps/*
   - packages/*
 
-allowBuilds:
-  esbuild: set this to true or false
-  workerd: set this to true or false
-
 # 允许执行构建脚本的依赖（pnpm 11 默认拦截）
+allowBuilds:
+  esbuild: true
+  workerd: true
+
 onlyBuiltDependencies:
   - esbuild
   - workerd

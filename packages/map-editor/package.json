@@ -1,0 +1,28 @@
+{
+  "name": "@worldmap/editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "地图编辑器插件本体：React 组件与交互（只依赖 @worldmap/core）",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@worldmap/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "react": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
