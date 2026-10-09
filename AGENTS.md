@@ -68,6 +68,8 @@ packages/
 - 生产密钥（BETTER_AUTH_SECRET / MIGRATE_SECRET / AI_KEY_SECRET / ADMIN_USERNAMES / BOOTSTRAP_INVITE_CODE / BETTER_AUTH_URL）
   通过 `wrangler secret bulk` 管理，不写入仓库
 - 修改代码后执行 `pnpm deploy` 即发布；数据库结构变更先本地加迁移文件，再执行远程迁移命令
+- ⚠️ **git 推送偶发连不上 GitHub 时的处理**：现象为 `Failed to connect to github.com:443 after 21000 ms`（`Test-NetConnection github.com -Port 443` 却显示可达）。原因是 git 默认走 HTTP/2，在当前网络下不稳定；解决办法是强制 HTTP/1.1：
+  `git -c http.version=HTTP/1.1 push origin main`
 
 ## 提交规范
 
