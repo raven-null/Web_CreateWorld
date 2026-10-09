@@ -42,7 +42,7 @@ import {
   unionRect,
   type BrushSettings,
 } from "./brush-engine";
-import { HistoryStack } from "./history";
+import { createHistoryBaseline, HistoryStack } from "./history";
 import { exportBoardImage, downloadBlob } from "./export-image";
 import { MapLayerStore } from "./layer-store";
 import { LayerPanel } from "./panels/LayerPanel";
@@ -778,10 +778,9 @@ export function MapEditor(props: MapEditorProps) {
           : currentBrush.tool === "eraser"
             ? 0
             : currentBrush.terrainIndex;
-      // 历史记录自己负责读取「改动前」的像素（必须在 paintRect 之前），
-      // 并在一次笔画结束（commit）时统一读取整条笔画的结束状态。
-      const reader = (target: PixelRect): Uint8Array => store.readRect(target);
-      historyRef.current.record(activeLayerIdRef.current ?? "", rect, reader);
+      // 历史记录自己负责从「开始前的基线」取改动前的像素，
+      // 因此这里必须先记录、后绘制（顺序反了就会把本次笔画当成原内容）
+      historyRef.current.record(activeLayerIdRef.current ?? "", rect);
       paintRect(store.indices, store.width, rect, value);
       store.markDirty(rect);
       refreshOffscreen(outerRect(rect, store.width, store.height));
@@ -838,30 +837,67 @@ export function MapEditor(props: MapEditorProps) {
     scheduleDraftSave();
   }, [flashHint, scheduleAutoSave, scheduleDraftSave]);
 
-  /** 重做一步（多图层：同样回到该步所属图层） */
-  const redo = useCallback((): void => {
+  /**
+   * 画布上是否还有内容（决定「重置画布」按钮是否为可点状态）。
+   *
+   * 只有真正按下重置、或需要给按钮定状态时才调用；热路径（每次落笔）不走这里，
+   * 避免每帧遍历 200 万个像素。
+   */
+  const hasCanvasContent = useCallback((): boolean => {
     const layerStore = layerStoreRef.current;
-    const entry = historyRef.current.peekRedo();
-    if (!layerStore || !entry) {
-      flashHint("没有可重做的操作");
+    if (!layerStore) {
+      return false;
+    }
+    for (const store of layerStore.rasterStores.values()) {
+      for (let index = 0; index < store.indices.length; index += 1) {
+        if (store.indices[index] !== 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }, []);
+
+  /**
+   * 重置画布：一键清空所有栅格图层的内容。
+   *
+   * 这是**破坏性操作但可撤销**：进入前会把整幅内容记成历史的一步，
+   * 因此误点之后按 Ctrl+Z 就能整体恢复（历史深度内）。
+   */
+  const resetCanvas = useCallback((): void => {
+    const layerStore = layerStoreRef.current;
+    const metaValue = metaRef.current;
+    if (!layerStore || !metaValue || readOnly) {
       return;
     }
-    if (entry.layerId && entry.layerId !== activeLayerIdRef.current) {
-      activeLayerIdRef.current = entry.layerId;
-      activeLayerIdStateRef.current = entry.layerId;
-      setActiveLayerId(entry.layerId);
-      storeRef.current = layerStore.storeOf(entry.layerId);
+    const targets = [...layerStore.rasterStores.entries()].filter(([, store]) =>
+      store.indices.some((value) => value !== 0),
+    );
+    if (targets.length === 0) {
+      flashHint("画布本来就是空的");
+      return;
     }
-    layerStore.writeRect(entry.layerId, entry.rect, entry.after);
-    historyRef.current.confirmRedo();
+
+    // 逐层记一步：撤销时各层分别回到重置前的样子
+    for (const [layerId, store] of targets) {
+      historyRef.current.begin(
+        "重置画布",
+        createHistoryBaseline(store.width, store.height, (rect) => store.readRect(rect)),
+      );
+      historyRef.current.record(layerId, { x: 0, y: 0, width: store.width, height: store.height });
+      store.indices.fill(0);
+      store.markDirty({ x: 0, y: 0, width: store.width, height: store.height });
+      historyRef.current.commit((rect) => store.readRect(rect));
+    }
+
     layerStore.redrawAllRenderBitmaps();
     setLayerList([...layerStore.layers]);
     setDirtyCount(layerStore.totalDirtyCount());
     setHistoryTick((tick) => tick + 1);
-    flashHint(`已重做「${entry.label}」，剩 ${historyRef.current.redoCount} 步`);
+    flashHint("画布已清空，按 Ctrl+Z 可以撤销");
     scheduleAutoSave();
     scheduleDraftSave();
-  }, [flashHint, scheduleAutoSave, scheduleDraftSave]);
+  }, [flashHint, readOnly, scheduleAutoSave, scheduleDraftSave]);
 
   /** 恢复本地草稿（用户确认后） */
   const handleRestoreDraft = useCallback(async (): Promise<void> => {
@@ -1336,7 +1372,11 @@ export function MapEditor(props: MapEditorProps) {
       paintingRef.current = true;
       erasingRef.current = isErase;
       lastPaintRef.current = null;
-      historyRef.current.begin(isErase ? "橡皮" : "笔刷");
+      // 先冻结「开始前」的基线，再落第一笔：顺序反了会把本次笔画当成原内容
+      historyRef.current.begin(
+        isErase ? "橡皮" : "笔刷",
+        createHistoryBaseline(store.width, store.height, (target) => store.readRect(target)),
+      );
       // 右键擦除：强制写入 0，不动用当前选中的地形
       paintAt(x, y, isErase ? 0 : undefined);
       lastPaintRef.current = { x, y };
@@ -1579,7 +1619,7 @@ export function MapEditor(props: MapEditorProps) {
     };
   }, [fullscreen]);
 
-  /** 快捷键：B / E / I / V、Ctrl+Z、Ctrl+Shift+Z、Ctrl+S、Esc 退出全屏 */
+  /** 快捷键：B / E / I / V、Ctrl+Z 撤销、Ctrl+S 保存、Esc 退出全屏 */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
@@ -1591,12 +1631,9 @@ export function MapEditor(props: MapEditorProps) {
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        // 只保留撤销：Shift 组合原本是重做，现在重做不再暴露给用户
         event.preventDefault();
-        if (event.shiftKey) {
-          redo();
-        } else {
-          undo();
-        }
+        undo();
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
@@ -1617,11 +1654,12 @@ export function MapEditor(props: MapEditorProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [undo, redo, saveNow]);
+  }, [undo, saveNow]);
 
   const zoomPercent = Math.round(viewport.zoom * 100);
   const canUndo = historyRef.current.undoCount > 0;
-  const canRedo = historyRef.current.redoCount > 0;
+  /** 画布上有内容时「重置画布」才可用（与用户约定：有东西就能点） */
+  const canReset = hasCanvasContent();
   const saving = saveState === "saving";
 
   return (
@@ -1696,7 +1734,7 @@ export function MapEditor(props: MapEditorProps) {
         <span style={{ fontSize: 12, color: theme.textFaint, minWidth: 32 }}>{brush.screenSize}px</span>
         <span style={dividerStyle(theme)} />
         <ToolButton theme={theme} label="撤销" disabled={!canUndo} onClick={undo} />
-        <ToolButton theme={theme} label="重做" disabled={!canRedo} onClick={redo} />
+        <ToolButton theme={theme} label="重置画布" disabled={!canReset} onClick={resetCanvas} />
         <span style={dividerStyle(theme)} />
         <ToolButton theme={theme} label="适应" onClick={handleFit} />
         <ToolButton

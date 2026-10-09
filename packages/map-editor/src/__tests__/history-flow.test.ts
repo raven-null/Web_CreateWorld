@@ -4,10 +4,13 @@
  * 针对用户反馈的「点撤销没反应」「点重做把画面清空」编写：
  * 一次拖动会产生几十个落点，历史必须按**整条笔画**记录，
  * 只记最后一个落点会导致撤销 / 重做只回退笔画的末尾（看起来像没生效或清空）。
+ *
+ * 另外锁定一条更隐蔽的规则：「改动前」的像素必须来自**笔画开始前的基线**。
+ * 若边画边取，快速拖动时网格块会被"半成品"污染，撤销后留下擦不掉的残块。
  */
 import { describe, expect, it } from "vitest";
 import { DEFAULT_TERRAIN_PALETTE, type MapHostAdapter } from "@worldmap/core";
-import { HistoryStack, type RectReader } from "../history";
+import { createHistoryBaseline, HistoryStack } from "../history";
 import { paintRect } from "../brush-engine";
 import { RasterTileStore, type PixelRect } from "../tile-store";
 
@@ -41,14 +44,18 @@ async function makeStore(): Promise<RasterTileStore> {
   return store;
 }
 
-/** 一个覆盖指定矩形的单笔（模拟 pointerdown → pointerup） */
+/** 取一份「此刻」的基线（与 MapEditor 落笔前的做法一致） */
+function baselineOf(store: RasterTileStore) {
+  return createHistoryBaseline(store.width, store.height, (rect) => store.readRect(rect));
+}
+
+/** 与 MapEditor 相同顺序：begin（冻结基线）→ record → 绘制 → commit */
 function stroke(store: RasterTileStore, history: HistoryStack, rect: PixelRect, value: number): void {
-  const reader: RectReader = (target) => store.readRect(target);
-  history.begin(value === 0 ? "橡皮" : "笔刷");
-  history.record("terrain", rect, reader);
+  history.begin("笔刷", baselineOf(store));
+  history.record("terrain", rect);
   paintRect(store.indices, store.width, rect, value);
   store.markDirty(rect);
-  history.commit(reader);
+  history.commit((r) => store.readRect(r));
 }
 
 /** 一条由多个落点组成的拖动笔画（模拟 pointermove 的补点） */
@@ -58,14 +65,13 @@ function dragStroke(
   rects: PixelRect[],
   value: number,
 ): void {
-  const reader: RectReader = (target) => store.readRect(target);
-  history.begin("笔刷");
+  history.begin("笔刷", baselineOf(store));
   for (const rect of rects) {
-    history.record("terrain", rect, reader);
+    history.record("terrain", rect);
     paintRect(store.indices, store.width, rect, value);
     store.markDirty(rect);
   }
-  history.commit(reader);
+  history.commit((r) => store.readRect(r));
 }
 
 /** 撤销一步 */
@@ -127,12 +133,15 @@ describe("撤销 / 重做的数据流", () => {
     // 只产生一步
     expect(history.undoCount).toBe(1);
     const entry = history.peekUndo();
-    // 历史矩形必须覆盖整条笔画，而不是最后一小段
+    // 历史范围必须覆盖整条笔画（允许按 256 网格外扩，但不能漏）
     const left = Math.min(...rects.map((rect) => rect.x));
     const right = Math.max(...rects.map((rect) => rect.x + rect.width));
-    expect(entry?.rect.x).toBe(left);
-    expect((entry?.rect.x ?? 0) + (entry?.rect.width ?? 0)).toBe(right);
-    expect(entry?.rect.width).toBe(right - left);
+    const top = Math.min(...rects.map((rect) => rect.y));
+    const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+    expect(entry?.rect.x).toBeLessThanOrEqual(left);
+    expect(entry?.rect.y).toBeLessThanOrEqual(top);
+    expect((entry?.rect.x ?? 0) + (entry?.rect.width ?? 0)).toBeGreaterThanOrEqual(right);
+    expect((entry?.rect.y ?? 0) + (entry?.rect.height ?? 0)).toBeGreaterThanOrEqual(bottom);
 
     // 撤销一次：整条笔画消失
     expect(applyUndo(store, history)).toBe(true);
@@ -194,22 +203,61 @@ describe("撤销 / 重做的数据流", () => {
     expect(Array.from(store.indices)).toEqual(Array.from(painted));
   });
 
+  it("落点跨越网格块时，撤销仍能整条还原（不被自己的笔迹污染）", async () => {
+    const store = await makeStore();
+    const history = new HistoryStack();
+    const before = new Uint8Array(store.indices);
+
+    // 从 x=246 拖到 x=264，跨过 256 这条网格块边界
+    const rects: PixelRect[] = [
+      { x: 246, y: 100, width: 6, height: 6 },
+      { x: 252, y: 100, width: 6, height: 6 },
+      { x: 258, y: 100, width: 6, height: 6 },
+      { x: 264, y: 100, width: 6, height: 6 },
+    ];
+    dragStroke(store, history, rects, 5);
+
+    expect(applyUndo(store, history)).toBe(true);
+    const diff = store.indices.findIndex((value, index) => value !== before[index]);
+    expect(diff, `撤销后 index ${diff} 处仍有残留`).toBe(-1);
+  });
+
+  it("已有内容的画布上继续画：撤销只回退本次笔画，不动旧内容", async () => {
+    const store = await makeStore();
+    const history = new HistoryStack();
+
+    // 先画一块底子，并把它算作"已有内容"
+    const old = { x: 150, y: 60, width: 40, height: 40 };
+    paintRect(store.indices, store.width, old, 3);
+    const withOld = new Uint8Array(store.indices);
+
+    // 再在它旁边（且跨网格块）画一笔
+    const rects: PixelRect[] = [
+      { x: 240, y: 60, width: 8, height: 8 },
+      { x: 248, y: 60, width: 8, height: 8 },
+      { x: 256, y: 60, width: 8, height: 8 },
+      { x: 264, y: 60, width: 8, height: 8 },
+    ];
+    dragStroke(store, history, rects, 8);
+
+    expect(applyUndo(store, history)).toBe(true);
+    // 旧内容必须原样保留，新笔画必须全部消失
+    expect(Array.from(store.indices)).toEqual(Array.from(withOld));
+  });
+
   it("记录过一次落笔就是一步；没有落点记录时不入栈", async () => {
     const store = await makeStore();
     const history = new HistoryStack();
-    const reader: RectReader = (target) => store.readRect(target);
 
-    // 用户确实落了一笔（即使内容与改动前相同），也保留为一步：
-    // 静默丢弃会让「画一笔 → 撤销」看起来像撤销了别的东西
-    history.begin("橡皮");
-    history.record("terrain", { x: 0, y: 0, width: 4, height: 4 }, reader);
-    history.commit(reader);
+    history.begin("橡皮", baselineOf(store));
+    history.record("terrain", { x: 0, y: 0, width: 4, height: 4 });
+    history.commit((r) => store.readRect(r));
     expect(history.undoCount).toBe(1);
 
     // 没调用过 record 就 commit（例如落笔在画布外）：不入栈
     const other = new HistoryStack();
-    other.begin("笔刷");
-    other.commit(reader);
+    other.begin("笔刷", baselineOf(store));
+    other.commit((r) => store.readRect(r));
     expect(other.undoCount).toBe(0);
   });
 

@@ -25,7 +25,7 @@ import {
   paintRect,
   unionRect,
 } from "../brush-engine";
-import { HistoryStack } from "../history";
+import { createHistoryBaseline, HistoryStack } from "../history";
 import { RasterTileStore, TILE_SIZE } from "../tile-store";
 
 /** 内存宿主适配器：测试用，不碰网络 */
@@ -160,24 +160,30 @@ describe("笔刷几何", () => {
 });
 
 describe("撤销栈", () => {
-  it("一次笔画合并为一步，可撤销可重做", () => {
-    const history = new HistoryStack();
-    // 6×6 的「画布」：reader 从它身上按矩形取像素，模拟真实仓库
-    const canvas = new Uint8Array(36);
+  /** 造一个可用的小画布：返回基线工厂与读取函数 */
+  const makeCanvas = (side: number) => {
+    const canvas = new Uint8Array(side * side);
     const reader = (rect: { x: number; y: number; width: number; height: number }): Uint8Array => {
       const out = new Uint8Array(rect.width * rect.height);
       for (let row = 0; row < rect.height; row += 1) {
         for (let col = 0; col < rect.width; col += 1) {
-          out[row * rect.width + col] = canvas[(rect.y + row) * 6 + rect.x + col] ?? 0;
+          out[row * rect.width + col] = canvas[(rect.y + row) * side + rect.x + col] ?? 0;
         }
       }
       return out;
     };
+    const baseline = () => createHistoryBaseline(side, side, reader);
+    return { canvas, reader, baseline };
+  };
 
-    history.begin("笔刷");
+  it("一次笔画合并为一步，可撤销可重做", () => {
+    const history = new HistoryStack();
+    const { canvas, reader, baseline } = makeCanvas(512);
+
+    history.begin("笔刷", baseline());
     // 两个落点都在落笔前记录（模拟 pointerdown 与补点）：before 应全是空白
-    history.record("terrain", { x: 1, y: 1, width: 2, height: 2 }, reader);
-    history.record("terrain", { x: 3, y: 3, width: 2, height: 2 }, reader);
+    history.record("terrain", { x: 1, y: 1, width: 2, height: 2 });
+    history.record("terrain", { x: 3, y: 3, width: 2, height: 2 });
     canvas.fill(3); // 笔画实际写入
     history.commit(reader);
 
@@ -185,11 +191,14 @@ describe("撤销栈", () => {
     expect(history.redoCount).toBe(0);
 
     const entry = history.peekUndo();
-    // 外接矩形覆盖两个落点：x 1→5，y 1→5
-    expect(entry?.rect).toEqual({ x: 1, y: 1, width: 4, height: 4 });
+    // 两个落点都被覆盖（范围按 256 网格对齐，必然包含 1~5）
+    expect(entry?.rect.x).toBeLessThanOrEqual(1);
+    expect(entry?.rect.y).toBeLessThanOrEqual(1);
+    expect((entry?.rect.x ?? 0) + (entry?.rect.width ?? 0)).toBeGreaterThanOrEqual(5);
+    expect((entry?.rect.y ?? 0) + (entry?.rect.height ?? 0)).toBeGreaterThanOrEqual(5);
     // before 是落笔前的空白，after 是结束时刻的真实内容
-    expect(Array.from(entry?.before ?? [])).toEqual(new Array(16).fill(0));
-    expect(Array.from(entry?.after ?? [])).toEqual(new Array(16).fill(3));
+    expect((entry?.before ?? new Uint8Array(1)).every((value) => value === 0)).toBe(true);
+    expect((entry?.after ?? new Uint8Array(1)).every((value) => value === 3)).toBe(true);
 
     history.confirmUndo();
     expect(history.undoCount).toBe(0);
@@ -201,34 +210,33 @@ describe("撤销栈", () => {
 
   it("没有实际记录的步骤不入栈", () => {
     const history = new HistoryStack();
-    history.begin("笔刷");
+    const { baseline } = makeCanvas(512);
+    history.begin("笔刷", baseline());
     history.commit();
     expect(history.undoCount).toBe(0);
   });
 
   it("新操作会清空重做栈", () => {
     const history = new HistoryStack();
-    const reader = (rect: { width: number; height: number }): Uint8Array =>
-      new Uint8Array(rect.width * rect.height);
-    history.begin("a");
-    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, reader);
+    const { reader, baseline } = makeCanvas(512);
+    history.begin("a", baseline());
+    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 });
     history.commit(reader);
     history.confirmUndo();
     expect(history.redoCount).toBe(1);
 
-    history.begin("b");
-    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 }, reader);
+    history.begin("b", baseline());
+    history.record("terrain", { x: 0, y: 0, width: 1, height: 1 });
     history.commit(reader);
     expect(history.redoCount).toBe(0);
   });
 
   it("超过深度上限时丢弃最旧的一步", () => {
     const history = new HistoryStack(3);
-    const reader = (rect: { width: number; height: number }): Uint8Array =>
-      new Uint8Array(rect.width * rect.height);
+    const { reader, baseline } = makeCanvas(512);
     for (let i = 0; i < 5; i += 1) {
-      history.begin(`step-${i}`);
-      history.record("terrain", { x: i, y: 0, width: 1, height: 1 }, reader);
+      history.begin(`step-${i}`, baseline());
+      history.record("terrain", { x: i, y: 0, width: 1, height: 1 });
       history.commit(reader);
     }
     expect(history.undoCount).toBe(3);
