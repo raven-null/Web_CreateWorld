@@ -38,7 +38,25 @@ const PAPER_NOISE_ALPHA = 0.07;
 /** 外部纸张贴图的默认边长：512 既够细，显存占用也可控（整幅白板只有它一份） */
 export const PAPER_TILE_SIZE = 512;
 
-/** 当前生效的纸张贴图（null 表示还没人设置，按需生成程序化版本） */
+/**
+ * 纸张铺法。
+ *
+ * - `tile`：平铺。适合**图案型**素材（花纹、织物、可无缝重复的纹理）
+ * - `stretch`：整幅拉伸铺一张。适合**照片型**素材（一张完整的羊皮纸 / 老纸照片）——
+ *   没有重复感，是这张图最自然的用法
+ */
+export type PaperFill = "tile" | "stretch";
+
+/** 当前铺法（默认平铺：程序化生成的纸张本来就是可平铺的噪点） */
+let paperFill: PaperFill = "tile";
+
+/** 当前生效的拉伸纸张（铺法为 stretch 时用；按白板比例裁好，只画一次） */
+let paperStretch: HTMLCanvasElement | null = null;
+
+/** 拉伸铺法用的源图（已解码） */
+let paperStretchSource: HTMLImageElement | null = null;
+
+/** 当前生效的纸张贴图（铺法为 tile 时用；null 表示还没人设置，按需生成程序化版本） */
 let paperTexture: HTMLCanvasElement | null = null;
 
 /** 纸张代表色缓存（贴图换了要清掉） */
@@ -152,33 +170,300 @@ export function createSeamlessTile(
 }
 
 /**
+ * 计算整幅纸张的取景规则。
+ *
+ * **取整张，不裁切也不留边**：直接让素材铺满白板矩形。
+ * 取舍过程：一开始按比例居中裁切（避免宽高比差异造成变形），
+ * 但羊皮纸那张是 4:3、白板是 2:1，按比例裁会丢掉 1/3 的画面——
+ * 而纸张是**有机纹理**，轻微拉伸看不出来，丢画面却看得出来。
+ * 因此选择「整张铺满、微变形」：素材细节一点不浪费。
+ *
+ * ⚠️ 素材分辨率别低于白板的一半，否则放大后会糊（羊皮纸 1440 宽 → 白板 2048 只用放大 1.42 倍）。
+ *
+ * @param sourceWidth 源图宽
+ * @param sourceHeight 源图高
+ * @returns 源图上要取的区域（整张）
+ */
+export function resolveStretchCrop(
+  sourceWidth: number,
+  sourceHeight: number,
+): { sx: number; sy: number; sw: number; sh: number } {
+  return { sx: 0, sy: 0, sw: sourceWidth, sh: sourceHeight };
+}
+
+/**
+ * 计算「目标区域」需要从整幅纸张里取哪一块（坐标都是世界像素）。
+ *
+ * 局部重烘时目标上下文被平移到区域原点，所以世界坐标必须减掉区域原点，
+ * 否则图案会整体位移——这是最容易写错、也最难肉眼定位的一处。
+ *
+ * @param left 区域左上角的世界 x
+ * @param top 区域左上角的世界 y
+ * @param width 区域宽
+ * @param height 区域高
+ * @param boardWidth 白板宽
+ * @param boardHeight 白板高
+ * @param stretchWidth 整幅纸张的宽
+ * @param stretchHeight 整幅纸张的高
+ * @returns 源图取样矩形 + 目标绘制矩形
+ */
+export function resolvePaperStretchDraw(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  boardWidth: number,
+  boardHeight: number,
+  stretchWidth: number,
+  stretchHeight: number,
+): { sx: number; sy: number; sw: number; sh: number; dx: number; dy: number; dw: number; dh: number } {
+  return {
+    sx: (left / boardWidth) * stretchWidth,
+    sy: (top / boardHeight) * stretchHeight,
+    sw: (width / boardWidth) * stretchWidth,
+    sh: (height / boardHeight) * stretchHeight,
+    dx: 0,
+    dy: 0,
+    dw: width,
+    dh: height,
+  };
+}
+
+/**
+ * 把一张图片做成**按白板比例裁好的整幅底图**（铺法 `stretch` 用）。
+ *
+ * @param source 已解码完成的图片
+ * @param width 输出宽（白板宽）
+ * @param height 输出高（白板高）
+ * @returns 整幅底图画布
+ */
+export function createStretchFill(
+  source: CanvasImageSource & { width: number; height: number },
+  width: number,
+  height: number,
+): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return canvas;
+  }
+  const { sx, sy, sw, sh } = resolveStretchCrop(source.width, source.height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/**
+ * 把整幅纸张的一个区域画到目标上下文。
+ *
+ * 只画白板覆盖到的那一段：局部重烘时目标矩形可能只是白板的一小块，
+ * 按比例取源图的对应区域即可，不必每次都画整张。
+ *
+ * @param context 目标上下文（调用方已经把坐标系移到区域左上角）
+ * @param boardWidth 白板宽
+ * @param boardHeight 白板高
+ * @param worldLeft 区域左上角的世界 x
+ * @param worldTop 区域左上角的世界 y
+ * @param width 区域宽
+ * @param height 区域高
+ * @param stretch 裁好的整幅底图
+ * @param localX 区域在目标上下文里的左上角 x（= 世界 x − 区域世界原点）
+ * @param localY 区域在目标上下文里的左上角 y
+ */
+function drawPaperStretch(
+  context: CanvasRenderingContext2D,
+  boardWidth: number,
+  boardHeight: number,
+  worldLeft: number,
+  worldTop: number,
+  width: number,
+  height: number,
+  stretch: HTMLCanvasElement,
+  localX: number,
+  localY: number,
+): void {
+  const rect = resolvePaperStretchDraw(
+    worldLeft,
+    worldTop,
+    width,
+    height,
+    boardWidth,
+    boardHeight,
+    stretch.width,
+    stretch.height,
+  );
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(stretch, rect.sx, rect.sy, rect.sw, rect.sh, localX, localY, width, height);
+}
+
+/**
+ * 把纸张铺到指定区域（按当前铺法分派）。
+ *
+ * 两个调用方（整幅烘焙、局部重烘）都走这里，
+ * 避免「整幅用拉伸、局部用平铺」这种两处不一致的坑。
+ *
+ * @param context 目标上下文（坐标系已移到区域左上角）
+ * @param left 区域左
+ * @param top 区域上
+ * @param width 区域宽
+ * @param height 区域高
+ * @param boardWidth 白板宽
+ * @param boardHeight 白板高
+ * @param offsetX 区域左上角在世界坐标里的 x（把局部坐标换算回世界坐标用）
+ * @param offsetY 区域左上角在世界坐标里的 y
+ */
+export function fillPaperRegion(
+  context: CanvasRenderingContext2D,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  boardWidth: number,
+  boardHeight: number,
+  offsetX = 0,
+  offsetY = 0,
+): void {
+  if (paperFill === "stretch") {
+    const stretch = ensureStretchPaper(boardWidth, boardHeight);
+    if (stretch) {
+      // 局部重烘时坐标系已经被移到区域左上角，世界坐标要减掉这个原点；
+      // 不减就会出现「图案整体位移」的错位
+      drawPaperStretch(
+        context,
+        boardWidth,
+        boardHeight,
+        left + offsetX,
+        top + offsetY,
+        width,
+        height,
+        stretch,
+        left - offsetX,
+        top - offsetY,
+      );
+      return;
+    }
+    // 没设置过拉伸素材（理论上不会走到）：退回平铺，至少不是空白
+  }
+  const pattern = context.createPattern(currentPaperTexture(), "repeat");
+  if (!pattern) {
+    context.fillStyle = PAPER_BASE;
+    context.fillRect(left - offsetX, top - offsetY, width, height);
+    return;
+  }
+  // 图案相位对齐到**白板原点**：否则局部重烘出来的纹路与整幅烘焙对不上（错位）
+  context.save();
+  context.translate(offsetX, offsetY);
+  context.fillStyle = pattern;
+  context.fillRect(left, top, width, height);
+  context.restore();
+}
+
+/**
+ * 取（或按当前素材现场生成）整幅拉伸底图。
+ * @param boardWidth 白板宽
+ * @param boardHeight 白板高
+ * @returns 整幅底图；没有拉伸素材时返回 null
+ */
+function ensureStretchPaper(boardWidth: number, boardHeight: number): HTMLCanvasElement | null {
+  if (!paperStretchSource) {
+    return null;
+  }
+  const width = Math.max(1, Math.round(boardWidth));
+  const height = Math.max(1, Math.round(boardHeight));
+  if (!paperStretch || paperStretch.width !== width || paperStretch.height !== height) {
+    paperStretch = createStretchFill(paperStretchSource, width, height);
+  }
+  return paperStretch;
+}
+
+/**
+ * 当前纸张铺法。
+ * @returns `tile` 或 `stretch`
+ */
+export function currentPaperFill(): PaperFill {
+  return paperFill;
+}
+
+/**
  * 加载宿主提供的纸张素材并设为当前贴图。
  *
  * 失败（地址无效、格式不支持、图片损坏）时**保留原贴图**并返回 null：
  * 纸张只是观感，不能因为一张图挂了就让编辑器白屏。
  *
  * @param url 图片地址（由宿主的资源管线产出）
- * @param size 平铺单元边长
- * @returns 加载成功返回贴图画布；失败返回 null
+ * @param fill 铺法：`tile` 平铺（图案型素材）或 `stretch` 整幅拉伸（照片型素材）
+ * @param size 平铺单元边长（仅 `tile` 用）
+ * @returns 加载成功返回纸张位图；失败返回 null
  */
-export async function applyPaperTexture(url: string, size = PAPER_TILE_SIZE): Promise<HTMLCanvasElement | null> {
+export async function applyPaperTexture(
+  url: string,
+  fill: PaperFill = "tile",
+  size = PAPER_TILE_SIZE,
+): Promise<PaperBitmap | null> {
   try {
     const image = await loadImage(url);
+    paperFill = fill;
+    paperBaseCache = null; // 代表色随贴图失效
+    if (fill === "stretch") {
+      paperStretchSource = image;
+      paperStretch = null; // 按需重建：白板尺寸可能变化
+      return image;
+    }
+    paperStretchSource = null;
+    paperStretch = null;
     const tile = createSeamlessTile(image, size);
     paperTexture = tile;
-    paperBaseCache = null; // 代表色随贴图失效
     return tile;
   } catch {
     return null;
   }
 }
 
+/** 纸张位图：加载后可能是画布（平铺贴图）或图片（整幅拉伸的源图） */
+export type PaperBitmap = HTMLCanvasElement | HTMLImageElement;
+
 /**
- * 取纸张的代表色（整张贴图的中位色）。
+ * 取用于「采样代表色 / 明暗」的**画布**。
+ *
+ * 平铺直接给贴图；拉伸给源图（图片本身没有 `getContext`，
+ * 因此这里现场缩成一张小画布来采样——源图就能代表整幅，
+ * 不必等白板尺寸确定，UI 挂载早期也能取到值）。
+ *
+ * @returns 采样用画布
+ */
+function paperSampleCanvas(): HTMLCanvasElement {
+  if (paperFill === "stretch" && paperStretchSource) {
+    return shrinkToSampleCanvas(paperStretchSource);
+  }
+  return currentPaperTexture();
+}
+
+/**
+ * 把任意图片缩成 64×64 的采样画布（避免为了取平均色而读整张大图）。
+ * @param source 源位图
+ * @returns 采样画布
+ */
+function shrinkToSampleCanvas(source: PaperBitmap): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.drawImage(source, 0, 0, 64, 64);
+  }
+  return canvas;
+}
+
+/**
+ * 取纸张的代表色（整张贴图的平均色）。
  *
  * 用途：手绘模式下白板之外的画布区域、以及导出图片的留白，都要用纸张色兜底，
  * 否则换了浅色素材（羊皮纸）后四周会留一圈深色，看着像画面被裁掉了一块。
- * 用中位色而不是底色常量，是为了「宿主换了纸张，兜底色也跟着换」。
+ * 用平均色而不是底色常量，是为了「宿主换了纸张，兜底色也跟着换」。
  *
  * @returns CSS 颜色字符串
  */
@@ -186,7 +471,7 @@ export function paperBaseColor(): string {
   if (paperBaseCache) {
     return paperBaseCache;
   }
-  const tile = currentPaperTexture();
+  const tile = paperSampleCanvas();
   const context = tile.getContext("2d");
   if (!context || tile.width === 0 || tile.height === 0) {
     return PAPER_BASE;
@@ -219,7 +504,7 @@ export function paperBaseColor(): string {
  * @returns 平均亮度 > 0.62 时返回 true（阈值取「浅米色」一侧）
  */
 export function paperIsLight(): boolean {
-  const tile = currentPaperTexture();
+  const tile = paperSampleCanvas();
   const context = tile.getContext("2d");
   if (!context || tile.width === 0 || tile.height === 0) {
     return false;
@@ -501,10 +786,8 @@ export function bakeRegionInto(
   context.rect(left, top, runWidth, bottom - top);
   context.clip();
 
-  // ① 纸张底
-  const paperPattern = context.createPattern(paper, "repeat");
-  context.fillStyle = paperPattern ?? PAPER_BASE;
-  context.fillRect(left, top, runWidth, bottom - top);
+  // ① 纸张底：按当前铺法铺（平铺 / 整幅拉伸），并且只铺这一区域
+  fillPaperRegion(context, left, top, runWidth, bottom - top, boardWidth, boardHeight, left, top);
 
   // ② 按地形图案填充：逐行成段扫描，减少 fillRect 次数
   const patternCache = new Map<number, CanvasPattern | null>();

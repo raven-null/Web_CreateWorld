@@ -11,7 +11,7 @@
  */
 import type { MapHostAdapter, MapLayer, TerrainBrush } from "@worldmap/core";
 import { terrainPaletteToUint32 } from "@worldmap/core";
-import { bakeHandDrawnLayer, bakeRegionInto, currentPaperTexture, PAPER_BASE, type RenderStyleMode } from "./terrain-render";
+import { bakeHandDrawnLayer, bakeRegionInto, currentPaperTexture, type RenderStyleMode } from "./terrain-render";
 import { DECORATION_CELL_PX } from "./terrain-style";
 import {
   RasterTileStore,
@@ -523,12 +523,9 @@ export class MapLayerStore {
     if (region.width === 0 || region.height === 0) {
       return;
     }
-    // 先清掉该区域（重新铺纸张），再重烘：否则旧图案会残留。
-    // 用纸张贴图而不是常量色：宿主换了纸张素材后，这块底色也要跟着换
-    const paper = this.paper();
-    context.fillStyle = context.createPattern(paper, "repeat") ?? PAPER_BASE;
-    context.fillRect(region.x, region.y, region.width, region.height);
-    bakeRegionInto(context, store.indices, store.width, store.height, region, store.palette, paper);
+    // 纸张与地形一起重烘：`bakeRegionInto` 内部会先按当前铺法铺纸，
+    // 所以这里不必再单独清底（重复清底会多一次全区域填色）
+    bakeRegionInto(context, store.indices, store.width, store.height, region, store.palette, this.paper());
   }
 }
 

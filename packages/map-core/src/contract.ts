@@ -180,7 +180,13 @@ export interface MapEditorProps {
    * 不传时插件用内置的程序化暗纸；地址失效时自动退回内置版本（不会白屏）。
    */
   paperTextureUrl?: string;
-  /** 纸张平铺单元边长（默认 512）：越大重复感越弱、显存占用越高 */
+  /**
+   * 纸张铺法（默认 `tile` 平铺）：
+   * - `tile` 适合**图案型**素材（花纹、织物、可无缝重复的纹理）
+   * - `stretch` 适合**照片型**素材（一张完整的羊皮纸 / 老纸照片）：整幅只铺一次，没有重复感
+   */
+  paperFill?: "tile" | "stretch";
+  /** 纸张平铺单元边长（默认 512，仅 `tile` 用）：越大重复感越弱、显存占用越高 */
   paperTextureTileSize?: number;
   locale?: "zh-CN" | "en";
   features?: MapEditorFeatures;

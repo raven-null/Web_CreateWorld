@@ -60,9 +60,19 @@
 
 | 文件 | 用途 | 来源 / 许可 | 引入日期 |
 | --- | --- | --- | --- |
-| `terrain/paper/parchment.jpg` | **手绘图案模式的纸张底色**（512×512 平铺单元，35KB）：由原图裁成正方形 + 镜像拼贴做成四边无缝，主站通过 `paperTextureUrl` 传入 | 用户提供（自有） | 2026-10-09 |
-| `terrain/paper/parchment-source.jpg` | 原档（1440×1080，未处理），改素材时从这里重新导出 | 用户提供（自有） | 2026-10-09 |
-| `terrain/paper/parchment-tiled.jpg` | 镜像拼贴效果预览（2×2），只用来肉眼确认四边无缝，不参与运行 | 由上一项生成 | 2026-10-09 |
+| `terrain/paper/parchment-full.jpg` | **当前在用**：整幅拉伸铺法的纸张（1440×1080，161KB）。主站通过 `paperTextureUrl` + `paperFill="stretch"` 传入，整张铺满白板一次 | 用户提供（自有） | 2026-10-09 |
+| `terrain/paper/parchment.jpg` | 平铺铺法用的贴图（512×512 正方形，35KB）：镜像拼贴做到四边无缝，供 `paperFill="tile"` 的宿主使用 | 用户提供（自有） | 2026-10-09 |
+| `terrain/paper/parchment-source.jpg` | 原档（1440×1080），换素材时从这里重新导出 | 用户提供（自有） | 2026-10-09 |
+| `terrain/paper/parchment-tiled.jpg` | 平铺接缝预览（2×2 镜像拼贴），只用来肉眼确认无缝，不参与运行 | 由 `parchment.jpg` 生成 | 2026-10-09 |
+
+### 为什么同时留「拉伸」和「平铺」两份
+
+两种铺法对应两类素材，用错会很难看：
+
+| 铺法 | 适合的素材 | 本素材的效果 |
+| --- | --- | --- |
+| `stretch`（整幅拉伸） | **照片型**：一张完整的羊皮纸 / 老纸照片 | ✅ 无重复感，细节全保留（轻微拉伸看不出来） |
+| `tile`（平铺） | **图案型**：花纹、织物、可无缝重复的纹理 | ⚠️ 普通照片直接平铺会出现网格接缝，必须先做镜像拼贴
 
 ## 怎么在代码里引用
 
@@ -70,9 +80,14 @@
 
 ```ts
 // 宿主（apps/web）这边导入，拿到打包后的地址，再作为 props 传进插件
-import parchmentUrl from "../../../../packages/map-editor/assets/terrain/paper/parchment.jpg";
+import parchmentUrl from "../../../../packages/map-editor/assets/terrain/paper/parchment-full.jpg";
 
-<MapEditor adapter={adapter} mapId={id} paperTextureUrl={parchmentUrl} />
+<MapEditor
+  adapter={adapter}
+  mapId={id}
+  paperTextureUrl={parchmentUrl}
+  paperFill="stretch" // 照片型素材用整幅拉伸；图案型素材才用 "tile"
+/>
 ```
 
 注意事项：

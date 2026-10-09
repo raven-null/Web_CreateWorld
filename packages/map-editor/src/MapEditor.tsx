@@ -210,7 +210,7 @@ export function MapEditor(props: MapEditorProps) {
     }
     let cancelled = false;
     void (async () => {
-      const tile = await applyPaperTexture(paperTextureUrl, props.paperTextureTileSize);
+      const tile = await applyPaperTexture(paperTextureUrl, props.paperFill ?? "tile", props.paperTextureTileSize);
       if (cancelled || !tile) {
         return;
       }
@@ -223,7 +223,7 @@ export function MapEditor(props: MapEditorProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paperTextureUrl, props.paperTextureTileSize, meta]);
+  }, [paperTextureUrl, props.paperFill, props.paperTextureTileSize, meta]);
 
   /**
    * 更新光标处的尺度读数（经纬度、每像素实距、横向变形倍率）。
