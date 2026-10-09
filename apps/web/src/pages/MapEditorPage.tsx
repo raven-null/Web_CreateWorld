@@ -34,12 +34,7 @@ export default function MapEditorPage() {
         </div>
       </div>
 
-      <MapEditor
-        mapId={mapId}
-        adapter={adapter}
-        readOnly
-        onError={(error) => console.error("[map-editor]", error.message)}
-      />
+      <MapEditor mapId={mapId} adapter={adapter} onError={(error) => console.error("[map-editor]", error.message)} />
     </div>
   );
 }

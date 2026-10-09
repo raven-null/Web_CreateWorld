@@ -113,11 +113,13 @@ function createMemoryAdapter(): MapHostAdapter {
     canEdit: true,
   };
 
+  // 内存里的「服务器端数据」：缓存瓦片字节与版本号，保存时更新它们
   const cache = new Map<string, Uint8Array>();
+  let revision = 1;
 
   return {
     async loadMeta() {
-      return meta;
+      return { ...meta, revision };
     },
     async loadTiles(_mapId: string, _layerId: string, coords: TileCoord[]): Promise<(Tile | null)[]> {
       return coords.map((coord) => {
@@ -130,8 +132,13 @@ function createMemoryAdapter(): MapHostAdapter {
         return { coord, format: "cwt1", data: bytes };
       });
     },
-    async saveTiles() {
-      return { revision: meta.revision };
+    async saveTiles(input) {
+      // 真实行为：把变化的瓦片写回「服务器端」，并把版本号 +1
+      for (const tile of input.tiles) {
+        cache.set(`${tile.coord.col}:${tile.coord.row}`, tile.data);
+      }
+      revision = input.revision + 1;
+      return { revision };
     },
   };
 }

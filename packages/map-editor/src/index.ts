@@ -10,4 +10,7 @@
 export * from "./adapter";
 export * from "./props";
 export * from "./theme";
+export * from "./brush-engine";
+export * from "./history";
+export * from "./tile-store";
 export { MapEditor } from "./MapEditor";
