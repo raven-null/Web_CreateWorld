@@ -9,8 +9,8 @@
  */
 import type { PixelRect } from "./tile-store";
 
-/** 工具类型 */
-export type ToolKind = "brush" | "eraser" | "picker" | "pan";
+/** 工具类型：measure 是测量工具（只读数、不落笔） */
+export type ToolKind = "brush" | "eraser" | "picker" | "pan" | "measure";
 
 /** 笔刷设置 */
 export interface BrushSettings {
@@ -20,7 +20,6 @@ export interface BrushSettings {
   screenSize: number;
   tool: ToolKind;
 }
-
 /** 笔刷默认设置 */
 export const DEFAULT_BRUSH: BrushSettings = {
   terrainIndex: 1,

@@ -14,7 +14,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_TERRAIN_PALETTE,
+  deformFactor,
+  formatArea,
+  formatDistance,
+  kilometersPerPixelLon,
+  pixelToLonLat,
+  scaleBar,
   terrainPaletteToUint32,
+  type BoardSpec,
+  type GeoPoint,
   type MapEditorProps,
   type MapEditorTheme,
   type MapMeta,
@@ -33,7 +41,9 @@ import {
   type BrushSettings,
 } from "./brush-engine";
 import { HistoryStack } from "./history";
+import { exportBoardImage, downloadBlob } from "./export-image";
 import { MarkerStore, type CanvasMarker } from "./marker-store";
+import { computeRasterStats, measurePolyline, type MeasureResult, type RasterStats } from "./measure";
 import { RasterTileStore, TILE_SIZE, tileRangeOf, type PixelRect } from "./tile-store";
 import { resolveTheme, themeToCssVars } from "./theme";
 
@@ -111,10 +121,69 @@ export function MapEditor(props: MapEditorProps) {
   /** 草稿定时器，以及「取当前草稿瓦片」的实现（由 effect 按依赖重建） */
   const draftTimerRef = useRef<number | null>(null);
   const draftCaptureRef = useRef<(() => Promise<void>) | null>(null);
+  /** 天体半径（km）：决定比例尺、面积与统计，改它不改已画内容 */
+  const [radiusKm, setRadiusKm] = useState(6371);
+  /** 测量：折点（世界像素）与结果 */
+  const [measurePoints, setMeasurePoints] = useState<{ x: number; y: number }[]>([]);
+  const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null);
+  const [measurePending, setMeasurePending] = useState<{ x: number; y: number } | null>(null);
+  /** 面积统计（点击「统计」时全图扫一遍） */
+  const [stats, setStats] = useState<RasterStats | null>(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [radiusOpen, setRadiusOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  /** 光标处的尺度读数 */
+  const [readout, setReadout] = useState<{
+    lat: number;
+    lon: number;
+    kmPerPixel: number;
+    deform: number;
+  } | null>(null);
+  const readoutRef = useRef<{ lat: number; lon: number; kmPerPixel: number; deform: number } | null>(null);
+  /** 半径的最新值（给不随半径重建的回调读） */
+  const radiusKmRef = useRef(6371);
 
   viewportRef.current = viewport;
   brushRef.current = brush;
   metaRef.current = meta;
+  radiusKmRef.current = radiusKm;
+
+  /**
+   * 更新光标处的尺度读数（经纬度、每像素实距、横向变形倍率）。
+   *
+   * 读数放在 ref 里、只在数值真的变化时触发一次重渲染：
+   * 指针移动每秒可能几十次，若每次都 setState 会让绘制掉帧。
+   * 定义在顶部是为了让后面定义的指针处理器都能直接引用。
+   *
+   * @param worldX 世界像素 x
+   * @param worldY 世界像素 y
+   */
+  const updateReadout = useCallback((worldX: number, worldY: number): void => {
+    const store = storeRef.current;
+    if (!store || !metaRef.current) {
+      return;
+    }
+    const board = boardOf(store, radiusKmRef.current);
+    const geo = pixelToLonLat(worldX, worldY, board);
+    const next = {
+      lat: geo.lat,
+      lon: geo.lon,
+      kmPerPixel: kilometersPerPixelLon(board, geo.lat),
+      deform: deformFactor(geo.lat),
+    };
+    const previous = readoutRef.current;
+    // 经纬度取一位小数比较：低于显示精度的变化不值得重渲染
+    if (
+      previous &&
+      previous.lat.toFixed(1) === next.lat.toFixed(1) &&
+      previous.lon.toFixed(1) === next.lon.toFixed(1) &&
+      previous.kmPerPixel.toFixed(2) === next.kmPerPixel.toFixed(2)
+    ) {
+      return;
+    }
+    readoutRef.current = next;
+    setReadout(next);
+  }, []);
 
   /** 载入元信息与栅格图层 */
   useEffect(() => {
@@ -133,6 +202,7 @@ export function MapEditor(props: MapEditorProps) {
         if (result.palette.length > 0) {
           setPalette(result.palette);
         }
+        setRadiusKm(result.board.radiusKm);
 
         const rasterLayer = result.layers.find((layer) => layer.storage === "raster");
         if (rasterLayer) {
@@ -520,8 +590,81 @@ export function MapEditor(props: MapEditorProps) {
       }
     }
 
+    // 测量折线与读数：按世界坐标换算屏幕位置
+    if (measurePoints.length > 0 || measurePending) {
+      const screenOf = (point: { x: number; y: number }): { x: number; y: number } => ({
+        x: (point.x - offsetX) * zoom,
+        y: (point.y - offsetY) * zoom,
+      });
+
+      context.strokeStyle = theme.accent;
+      context.lineWidth = 1.5;
+      context.beginPath();
+      measurePoints.forEach((point, index) => {
+        const screen = screenOf(point);
+        if (index === 0) {
+          context.moveTo(screen.x, screen.y);
+        } else {
+          context.lineTo(screen.x, screen.y);
+        }
+      });
+      const pendingScreen = measurePending ? screenOf(measurePending) : null;
+      if (pendingScreen && measurePoints.length > 0) {
+        context.lineTo(pendingScreen.x, pendingScreen.y);
+      }
+      context.stroke();
+
+      for (const point of measurePoints) {
+        const screen = screenOf(point);
+        context.beginPath();
+        context.arc(screen.x, screen.y, 3, 0, Math.PI * 2);
+        context.fillStyle = theme.accent;
+        context.fill();
+      }
+
+      // 读数标签：画在起点附近
+      const first = measurePoints[0];
+      if (first && measureResult) {
+        const screen = screenOf(first);
+        const label =
+          measureResult.points.length >= 2
+            ? `${formatDistance(measureResult.polylineKm)} · 方位 ${Math.round(measureResult.directBearing)}°`
+            : "";
+        if (label) {
+          context.font = '12px "Source Han Sans SC", "Noto Sans SC", sans-serif';
+          const textWidth = context.measureText(label).width;
+          context.fillStyle = "rgba(20, 18, 15, 0.8)";
+          context.fillRect(screen.x + 8, screen.y + 8, textWidth + 8, 18);
+          context.fillStyle = theme.text;
+          context.fillText(label, screen.x + 12, screen.y + 21);
+        }
+      }
+    }
+
+    // 比例尺条：按光标纬度实时换算（等距圆柱下比例尺随纬度变化）
+    if (store) {
+      const cursor = cursorRef.current;
+      const lat = cursor
+        ? pixelToLonLat(offsetX + cursor.x / zoom, offsetY + cursor.y / zoom, boardOf(store, radiusKm)).lat
+        : 0;
+      const board = boardOf(store, radiusKm);
+      const bar = scaleBar(board, lat, zoom, 120);
+      if (bar.pixels > 8) {
+        const barHeight = 6;
+        const x0 = 12;
+        const y0 = cssHeight - 16;
+        context.fillStyle = "rgba(20, 18, 15, 0.72)";
+        context.fillRect(x0 - 4, y0 - barHeight - 8, Math.max(bar.pixels, 40) + 8, barHeight + 8);
+        context.fillStyle = theme.accent;
+        context.fillRect(x0, y0 - barHeight, bar.pixels, barHeight);
+        context.font = '11px "Source Han Sans SC", "Noto Sans SC", sans-serif';
+        context.fillStyle = theme.text;
+        context.fillText(formatDistance(bar.kilometers), x0, y0 - barHeight - 2);
+      }
+    }
+
     context.restore();
-  }, [viewport, theme, meta, historyTick, saveState, markerTick]);
+  }, [viewport, theme, meta, historyTick, saveState, markerTick, measurePoints, measurePending, measureResult, radiusKm]);
 
   /** 屏幕坐标 → 世界像素 */
   const toWorld = useCallback((screenX: number, screenY: number): { x: number; y: number } => {
@@ -651,7 +794,88 @@ export function MapEditor(props: MapEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.drafts, mapId]);
 
-  /** 指针按下：按当前工具决定绘制 / 取色 / 平移 */
+  /** 清理测量（工具切换或用户取消时调用） */
+  const clearMeasure = useCallback((): void => {
+    setMeasurePoints([]);
+    setMeasureResult(null);
+    setMeasurePending(null);
+  }, []);
+
+  /**
+   * 追加一个测量点并重算读数。
+   * @param world 世界像素坐标
+   */
+  const addMeasurePoint = useCallback(
+    (world: { x: number; y: number }): void => {
+      const store = storeRef.current;
+      if (!store) {
+        return;
+      }
+      setMeasurePoints((previous) => {
+        const next = [...previous, world];
+        const geoPoints: GeoPoint[] = next.map((point) => pixelToLonLat(point.x, point.y, boardOf(store, radiusKm)));
+        setMeasureResult(measurePolyline(geoPoints, radiusKm));
+        return next;
+      });
+    },
+    [radiusKm],
+  );
+
+  /** 点击「统计」：全图扫一遍算各地形面积（2048 白板约两百多万像素，毫秒级） */
+  const handleComputeStats = useCallback((): void => {
+    const store = storeRef.current;
+    if (!store) {
+      return;
+    }
+    const board = boardOf(store, radiusKm);
+    setStats(computeRasterStats(store.indices, store.width, store.height, store.palette, board));
+    setStatsOpen(true);
+  }, [radiusKm]);
+
+  /** 导出为图片（PNG 优先，超限自动降 WebP） */
+  const handleExport = useCallback(async (): Promise<void> => {
+    const store = storeRef.current;
+    if (!store) {
+      return;
+    }
+    setExporting(true);
+    try {
+      const result = await exportBoardImage({
+        width: store.width,
+        height: store.height,
+        indices: store.indices,
+        palette: store.palette,
+        includeGraticule: true,
+        includeScaleBar: true,
+        radiusKm,
+      });
+      const extension = result.mimeType === "image/png" ? "png" : "webp";
+      const blob = result.blob;
+      // 宿主可通过 onExport 接管下载（例如桌面端用系统保存对话框）
+      if (props.onExport) {
+        await props.onExport(blob, `map-${mapId}.${extension}`);
+      } else {
+        downloadBlob(blob, `map-${mapId}.${extension}`);
+      }
+    } catch (err) {
+      props.onError?.(err as Error);
+    } finally {
+      setExporting(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapId, radiusKm, props.onExport, props.onError]);
+
+  /** 设定天体半径：只影响读数，不改已画内容 */
+  const handleSetRadius = useCallback((value: number): void => {
+    if (!Number.isFinite(value) || value <= 0) {
+      return;
+    }
+    setRadiusKm(value);
+    // 半径变了，之前算的面积不再有效
+    setStats(null);
+  }, []);
+
+  /** 指针按下：按当前工具决定绘制 / 取色 / 平移 / 测量 */
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
       const store = storeRef.current;
@@ -688,6 +912,12 @@ export function MapEditor(props: MapEditorProps) {
       if (markerMode && event.button === 0 && !readOnly) {
         const target = toWorld(x, y);
         setPendingMarker({ x: target.x, y: target.y });
+        return;
+      }
+
+      // ③ 测量工具：点击落点，读数实时更新（只读视图也能用）
+      if (tool === "measure" && event.button === 0) {
+        addMeasurePoint(toWorld(x, y));
         return;
       }
 
@@ -764,8 +994,13 @@ export function MapEditor(props: MapEditorProps) {
         return;
       }
 
-      // 未按下时只刷新光标预览
+      // 未按下时只刷新光标预览（测量模式下同时更新待定点与尺度读数）
       if (!paintingRef.current) {
+        const world = toWorld(x, y);
+        updateReadout(world.x, world.y);
+        if (brushRef.current.tool === "measure") {
+          setMeasurePending(world);
+        }
         drawCursorOnly();
         return;
       }
@@ -781,9 +1016,11 @@ export function MapEditor(props: MapEditorProps) {
         paintAt(x, y, forced);
       }
       lastPaintRef.current = { x, y };
+      const paintingWorld = toWorld(x, y);
+      updateReadout(paintingWorld.x, paintingWorld.y);
       drawCursorOnly();
     },
-    [paintAt],
+    [paintAt, toWorld, updateReadout],
   );
 
   /** 指针抬起：结束一步笔画 */
@@ -988,6 +1225,15 @@ export function MapEditor(props: MapEditorProps) {
           label="平移 (V)"
           onClick={() => setBrush((current) => ({ ...current, tool: "pan" }))}
         />
+        <ToolButton
+          theme={theme}
+          active={brush.tool === "measure"}
+          label="测量"
+          onClick={() => {
+            setBrush((current) => ({ ...current, tool: "measure" }));
+            clearMeasure();
+          }}
+        />
         <span style={dividerStyle(theme)} />
         <span style={{ fontSize: 12, color: theme.textDim }}>笔刷</span>
         <input
@@ -1018,6 +1264,21 @@ export function MapEditor(props: MapEditorProps) {
           />
         )}
         <span style={{ marginLeft: "auto", fontSize: 12, color: theme.textDim }}>{zoomPercent}%</span>
+        <ToolButton
+          theme={theme}
+          active={statsOpen}
+          label="统计"
+          onClick={() => (statsOpen ? setStatsOpen(false) : handleComputeStats())}
+        />
+        <ToolButton theme={theme} active={radiusOpen} label="半径" onClick={() => setRadiusOpen((open) => !open)} />
+        {!readOnly && (
+          <ToolButton
+            theme={theme}
+            label={exporting ? "导出中…" : "导出"}
+            disabled={exporting}
+            onClick={() => void handleExport()}
+          />
+        )}
         {!readOnly && (
           <ToolButton
             theme={theme}
@@ -1125,6 +1386,109 @@ export function MapEditor(props: MapEditorProps) {
             <div>Ctrl+Z 撤销 · Ctrl+S 保存</div>
             <div>点标记可拖动 · 标记可删除</div>
             <div>停止绘制 3 秒后自动保存</div>
+          </div>
+        )}
+
+        {/* 面积统计面板 */}
+        {statsOpen && (
+          <div
+            style={{
+              position: "absolute",
+              right: 12,
+              bottom: 12,
+              width: 240,
+              padding: 10,
+              fontSize: 12,
+              background: `${theme.panel}f2`,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radius,
+              color: theme.textDim,
+            }}
+          >
+            <div style={{ color: theme.text, marginBottom: 6 }}>
+              面积统计（半径 {Math.round(radiusKm)} km）
+            </div>
+            {!stats && <div>点击工具栏「统计」计算</div>}
+            {stats && (
+              <>
+                <div style={{ marginBottom: 6 }}>
+                  已画 {formatArea(stats.paintedKm2)}（占天体表面 {stats.paintedPercent.toFixed(1)}%）
+                </div>
+                {stats.terrains.slice(0, 8).map((terrain) => (
+                  <div key={terrain.name} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <span
+                      style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: 2,
+                        background: terrain.color,
+                        flex: "0 0 auto",
+                      }}
+                    />
+                    <span style={{ flex: 1 }}>{terrain.name}</span>
+                    <span style={{ color: theme.text }}>{formatArea(terrain.areaKm2)}</span>
+                  </div>
+                ))}
+                {stats.terrains.length > 8 && <div>…还有 {stats.terrains.length - 8} 项</div>}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* 天体半径设定：只影响读数，不改已画内容 */}
+        {radiusOpen && (
+          <div
+            style={{
+              position: "absolute",
+              right: 12,
+              top: 48,
+              width: 250,
+              padding: 10,
+              fontSize: 12,
+              lineHeight: 1.8,
+              background: `${theme.panel}f2`,
+              border: `1px solid ${theme.border}`,
+              borderRadius: theme.radius,
+              color: theme.textDim,
+            }}
+          >
+            <div style={{ color: theme.text, marginBottom: 4 }}>天体半径</div>
+            <div>比例尺与面积都按它换算；改半径不动已画内容。</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <input
+                type="number"
+                min={100}
+                max={1000000}
+                value={Math.round(radiusKm)}
+                onChange={(event) => handleSetRadius(Number(event.target.value))}
+                style={{
+                  width: 90,
+                  background: theme.background,
+                  color: theme.text,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: theme.radius,
+                  padding: "3px 6px",
+                  fontSize: 12,
+                }}
+              />
+              <span>km</span>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+              {[
+                { name: "地球", km: 6371 },
+                { name: "火星", km: 3390 },
+                { name: "月球", km: 1737 },
+              ].map((preset) => (
+                <button
+                  key={preset.name}
+                  type="button"
+                  onClick={() => handleSetRadius(preset.km)}
+                  style={{ ...buttonStyle(theme), padding: "3px 8px" }}
+                >
+                  {preset.name} {preset.km}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -1289,6 +1653,18 @@ export function MapEditor(props: MapEditorProps) {
         <span>
           {meta ? `${meta.board.width}×${meta.board.height}` : "—"} · 缩放 {zoomPercent}%
         </span>
+        {readout && (
+          <span>
+            {readout.lon.toFixed(1)}°, {readout.lat.toFixed(1)}° · 每像素{" "}
+            {formatDistance(readout.kmPerPixel)} · 变形 ×{readout.deform.toFixed(2)}
+          </span>
+        )}
+        {measureResult && measureResult.points.length >= 2 && (
+          <span style={{ color: theme.accent }}>
+            测量 {formatDistance(measureResult.polylineKm)} · 直线{" "}
+            {formatDistance(measureResult.directKm)} · 方位 {Math.round(measureResult.directBearing)}°
+          </span>
+        )}
         <span>待保存瓦片 {dirtyCount}</span>
         {markerCount > 0 && <span>标记 {markerCount}</span>}
         {draftState !== "none" && (
@@ -1388,6 +1764,16 @@ function buildImageData(
     }
   }
   return new ImageData(rgba, width, height);
+}
+
+/**
+ * 由瓦片仓库与当前半径构造白板规格（比例尺与面积都依赖它）。
+ * @param store 瓦片仓库
+ * @param radiusKm 天体半径
+ * @returns 白板规格
+ */
+function boardOf(store: { width: number; height: number }, radiusKm: number): BoardSpec {
+  return { width: store.width, height: store.height, projection: "equirect", radiusKm };
 }
 
 /**

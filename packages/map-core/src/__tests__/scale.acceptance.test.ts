@@ -125,11 +125,25 @@ describe("验收 4 · 面积按纬度带加权", () => {
     expect(at60 / equator).toBeCloseTo(0.5, 2);
   });
 
-  it("「像素数 × 常数」会高估 —— 加权结果必须小于它", () => {
+  it("「像素数 × 赤道常数」会高估 —— 加权结果必须明显更小", () => {
     const rowCounts = new Array<number>(EARTH_BOARD.height).fill(EARTH_BOARD.width);
     const weighted = areaFromRowCounts(EARTH_BOARD, rowCounts);
-    const naive = EARTH_BOARD.width * EARTH_BOARD.height * pixelAreaKm2(EARTH_BOARD, 0);
-    expect(weighted).toBeLessThan(naive * 0.7);
+    // 赤道常数 = 2·k₀²（纬度方向积分带来的系数 2）
+    const equatorConstant = pixelAreaKm2(EARTH_BOARD, 0);
+    const naive = EARTH_BOARD.width * EARTH_BOARD.height * equatorConstant;
+    // 加权后应约等于整幅真实面积（4πR²），而 naive 约为它的 4/π 倍
+    expect(weighted).toBeLessThan(naive * 0.85);
+    expect(withinTolerance(weighted, boardSurfaceAreaKm2(EARTH_BOARD), 0.02)).toBe(true);
+  });
+
+  it("半幅填满 = 半个球面（这条逮住过面积系数漏 2 的 bug）", () => {
+    const half = Math.floor(EARTH_BOARD.height / 2);
+    const rowCounts = new Array<number>(EARTH_BOARD.height).fill(0);
+    for (let row = 0; row < half; row += 1) {
+      rowCounts[row] = EARTH_BOARD.width;
+    }
+    const northHalf = areaFromRowCounts(EARTH_BOARD, rowCounts);
+    expect(withinTolerance(northHalf, boardSurfaceAreaKm2(EARTH_BOARD) / 2, 0.02)).toBe(true);
   });
 
   it.skip("球面多边形面积可算（球面三角形 = 1/8 球面）", () => {
