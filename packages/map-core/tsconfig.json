@@ -1,4 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // DOM 只用于 CompressionStream / Response 等标准 Web API 的类型定义；
+    // 本包仍是纯逻辑，不调用浏览器专属 API（服务端与 Node 同样可运行）。
+    "lib": ["ES2022", "DOM"]
+  },
   "include": ["src"]
 }
