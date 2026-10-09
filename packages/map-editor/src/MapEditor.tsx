@@ -793,11 +793,31 @@ export function MapEditor(props: MapEditorProps) {
     [readOnly, toWorld, refreshOffscreen, props],
   );
 
+  /** 历史操作提示（撤销 / 重做的即时反馈，避免"点了没反应"的困惑） */
+  const [actionHint, setActionHint] = useState<string | null>(null);
+  const actionHintTimerRef = useRef<number | null>(null);
+
+  /**
+   * 显示一条短暂的操作提示。
+   * @param text 提示文字
+   */
+  const flashHint = useCallback((text: string): void => {
+    setActionHint(text);
+    if (actionHintTimerRef.current !== null) {
+      window.clearTimeout(actionHintTimerRef.current);
+    }
+    actionHintTimerRef.current = window.setTimeout(() => {
+      actionHintTimerRef.current = null;
+      setActionHint(null);
+    }, 1600);
+  }, []);
+
   /** 撤销一步（多图层：回到该步所属图层） */
   const undo = useCallback((): void => {
     const layerStore = layerStoreRef.current;
     const entry = historyRef.current.peekUndo();
     if (!layerStore || !entry) {
+      flashHint("没有可撤销的操作");
       return;
     }
     // 切到该步所在的图层：否则用户会看到「撤销了但画面没变」
@@ -813,15 +833,17 @@ export function MapEditor(props: MapEditorProps) {
     setLayerList([...layerStore.layers]);
     setDirtyCount(layerStore.totalDirtyCount());
     setHistoryTick((tick) => tick + 1);
+    flashHint(`已撤销「${entry.label}」，剩 ${historyRef.current.undoCount} 步`);
     scheduleAutoSave();
     scheduleDraftSave();
-  }, [scheduleAutoSave, scheduleDraftSave]);
+  }, [flashHint, scheduleAutoSave, scheduleDraftSave]);
 
   /** 重做一步（多图层：同样回到该步所属图层） */
   const redo = useCallback((): void => {
     const layerStore = layerStoreRef.current;
     const entry = historyRef.current.peekRedo();
     if (!layerStore || !entry) {
+      flashHint("没有可重做的操作");
       return;
     }
     if (entry.layerId && entry.layerId !== activeLayerIdRef.current) {
@@ -836,9 +858,10 @@ export function MapEditor(props: MapEditorProps) {
     setLayerList([...layerStore.layers]);
     setDirtyCount(layerStore.totalDirtyCount());
     setHistoryTick((tick) => tick + 1);
+    flashHint(`已重做「${entry.label}」，剩 ${historyRef.current.redoCount} 步`);
     scheduleAutoSave();
     scheduleDraftSave();
-  }, [scheduleAutoSave, scheduleDraftSave]);
+  }, [flashHint, scheduleAutoSave, scheduleDraftSave]);
 
   /** 恢复本地草稿（用户确认后） */
   const handleRestoreDraft = useCallback(async (): Promise<void> => {
@@ -1799,6 +1822,27 @@ export function MapEditor(props: MapEditorProps) {
           </div>
         )}
         {!meta && !error && <div style={overlayStyle(theme)}>正在加载白板…</div>}
+        {/* 撤销 / 重做的即时反馈：让「点了有没有生效」一眼可见 */}
+        {actionHint && (
+          <div
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: 12,
+              transform: "translateX(-50%)",
+              padding: "5px 12px",
+              fontSize: 12,
+              background: `${PAPER_BASE}ee`,
+              border: `1px solid ${theme.accent}`,
+              borderRadius: theme.radius,
+              color: theme.text,
+              pointerEvents: "none",
+              zIndex: 4,
+            }}
+          >
+            {actionHint}
+          </div>
+        )}
         {/* 图层面板（右上下拉，避免挡住画布中央） */}
         {layerPanelOpen && (
           <div style={{ position: "absolute", top: 44, right: 8, zIndex: 2 }}>

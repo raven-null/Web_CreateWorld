@@ -74,6 +74,8 @@ export class RasterTileStore {
    * 这种情况会被误判成有改动，白白上传一遍（用户看到的则是无意义的上传与版本号增长）。
    */
   private readonly baselineTiles = new Map<string, Uint8Array>();
+  /** 累积的脏矩形（渲染层局部重烘用） */
+  private dirtyBounds: PixelRect | null = null;
 
   constructor(options: {
     adapter: MapHostAdapter;
@@ -182,6 +184,48 @@ export class RasterTileStore {
         this.dirty.add(tileKey(col, row));
       }
     }
+    this.accumulateDirtyRect(rect);
+  }
+
+  /**
+   * 累积脏矩形（外接矩形），供渲染层做局部重烘。
+   *
+   * 手绘模式下整幅重烘一张 2048 宽的图要几百毫秒，撤销 / 重做会明显卡顿；
+   * 有了脏矩形就能只重烘受影响的一小块。
+   *
+   * @param rect 世界像素矩形
+   */
+  private accumulateDirtyRect(rect: PixelRect): void {
+    const right = rect.x + rect.width;
+    const bottom = rect.y + rect.height;
+    if (!this.dirtyBounds) {
+      this.dirtyBounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      return;
+    }
+    const current = this.dirtyBounds;
+    const left = Math.min(current.x, rect.x);
+    const top = Math.min(current.y, rect.y);
+    const newRight = Math.max(current.x + current.width, right);
+    const newBottom = Math.max(current.y + current.height, bottom);
+    this.dirtyBounds = { x: left, y: top, width: newRight - left, height: newBottom - top };
+  }
+
+  /**
+   * 取并清空脏矩形。
+   * @returns 累积的脏区域；没有脏区域时返回 null
+   */
+  takeDirtyRect(): PixelRect | null {
+    const bounds = this.dirtyBounds;
+    this.dirtyBounds = null;
+    return bounds;
+  }
+
+  /**
+   * 查看脏矩形（不清空）。
+   * @returns 累积的脏区域；没有时返回 null
+   */
+  dirtyRect(): PixelRect | null {
+    return this.dirtyBounds;
   }
 
   /** 把矩形外扩后整块标记为脏（撤销时用：差异区域可能超出原笔画矩形） */

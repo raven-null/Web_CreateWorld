@@ -255,10 +255,6 @@ function drawHatch(context: CanvasRenderingContext2D, cell: number): void {
 
 /**
  * 把整幅索引栅格「烘」成一张手绘风格位图。
- *
- * 步骤：先铺纸张底 → 逐地形用图案填充 → 地形边界描边 → 散布装饰。
- * 边界描边与装饰都要求知道邻格，因此这里逐像素扫描一次索引数组。
- *
  * @param indices 全幅索引栅格
  * @param width 白板宽
  * @param height 白板高
@@ -277,56 +273,86 @@ export function bakeHandDrawnLayer(
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d");
-  if (!context) {
-    return canvas;
+  if (context) {
+    bakeRegionInto(context, indices, width, height, { x: 0, y: 0, width, height }, palette, paper);
   }
+  return canvas;
+}
+
+/** 世界像素矩形（渲染层自用，与 tile-store 的 PixelRect 同构） */
+interface Region {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 把索引栅格的**指定区域**烘进已有画布。
+ *
+ * 局部重烘是撤销 / 重做的性能关键：整幅重烘一张 2048 宽的手绘位图要几百毫秒，
+ * 而一笔通常只覆盖很小一块。
+ *
+ * @param context 目标上下文（已对应到画布坐标系）
+ * @param indices 全幅索引栅格
+ * @param boardWidth 白板宽
+ * @param boardHeight 白板高
+ * @param region 要重烘的区域
+ * @param palette 调色板
+ * @param paper 纸张贴图
+ */
+export function bakeRegionInto(
+  context: CanvasRenderingContext2D,
+  indices: Uint8Array,
+  boardWidth: number,
+  boardHeight: number,
+  region: Region,
+  palette: TerrainBrush[],
+  paper: HTMLCanvasElement,
+): void {
+  const left = Math.max(0, Math.floor(region.x));
+  const top = Math.max(0, Math.floor(region.y));
+  const right = Math.min(boardWidth, Math.ceil(region.x + region.width));
+  const bottom = Math.min(boardHeight, Math.ceil(region.y + region.height));
+  const runWidth = right - left;
+  if (runWidth <= 0 || bottom - top <= 0) {
+    return;
+  }
+
+  context.save();
+  // 局部重烘时把坐标系移到区域左上角，绘制代码就能一直用「区域内的相对坐标」
+  context.translate(-left, -top);
+  context.beginPath();
+  context.rect(left, top, runWidth, bottom - top);
+  context.clip();
 
   // ① 纸张底
   const paperPattern = context.createPattern(paper, "repeat");
   context.fillStyle = paperPattern ?? PAPER_BASE;
-  context.fillRect(0, 0, width, height);
+  context.fillRect(left, top, runWidth, bottom - top);
 
-  // ② 按地形色填充（用图案铺，图案按世界坐标对齐 → 缩放平移时不游动）
-  const byIndex = new Map<number, { color: string; ink: string; pattern: TerrainPatternKind }>();
-  for (const brush of palette) {
-    const style = resolveTerrainStyle(brush.index);
-    byIndex.set(brush.index, { color: brush.color, ink: style.stroke, pattern: style.pattern });
-  }
-  // 同一地形共用一个离屏图案（createPattern 需要元素，缓存起来避免重复生成）
+  // ② 按地形图案填充：逐行成段扫描，减少 fillRect 次数
   const patternCache = new Map<number, CanvasPattern | null>();
-  const colorCache = new Map<number, string>();
-
-  // 逐行成段扫描：同一行里连续的相同地形取一段，减少 fillRect 次数
-  for (let y = 0; y < height; y += 1) {
-    let runStart = 0;
-    let current = indices[y * width] ?? 0;
-    for (let x = 1; x <= width; x += 1) {
-      const value = x < width ? (indices[y * width + x] ?? 0) : -1;
+  for (let y = top; y < bottom; y += 1) {
+    const rowStart = y * boardWidth;
+    let runStart = left;
+    let current = indices[rowStart + left] ?? 0;
+    for (let x = left + 1; x <= right; x += 1) {
+      const value = x < right ? (indices[rowStart + x] ?? 0) : -1;
       if (value === current) {
         continue;
       }
-      // 收束 [runStart, x) 这一段
       if (current !== 0) {
-        const info = byIndex.get(current);
-        if (info) {
-          let pattern = patternCache.get(current);
-          if (pattern === undefined) {
-            const tile = createTerrainPattern(info.pattern, info.color, info.ink);
-            pattern = context.createPattern(tile, "repeat");
-            patternCache.set(current, pattern);
-          }
-          if (pattern) {
-            context.fillStyle = pattern;
-          } else {
-            let color = colorCache.get(current);
-            if (!color) {
-              color = info.color;
-              colorCache.set(current, color);
-            }
-            context.fillStyle = color;
-          }
-          context.fillRect(runStart, y, x - runStart, 1);
+        const brush = palette.find((item) => item.index === current);
+        const style = resolveTerrainStyle(current);
+        let pattern = patternCache.get(current);
+        if (pattern === undefined) {
+          const tile = createTerrainPattern(style.pattern, brush?.color ?? "#6b6355", style.stroke);
+          pattern = context.createPattern(tile, "repeat");
+          patternCache.set(current, pattern);
         }
+        context.fillStyle = pattern ?? brush?.color ?? "#6b6355";
+        context.fillRect(runStart, y, x - runStart, 1);
       }
       runStart = x;
       current = value;
@@ -335,25 +361,24 @@ export function bakeHandDrawnLayer(
 
   // ③ 地形边界描边：只描「左右或上下邻格地形不同」的边
   context.lineWidth = 1;
-  context.beginPath();
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const value = indices[y * width + x] ?? 0;
+  for (let y = top; y < bottom; y += 1) {
+    const rowStart = y * boardWidth;
+    for (let x = left; x < right; x += 1) {
+      const value = indices[rowStart + x] ?? 0;
       if (value === 0) {
         continue;
       }
-      const right = x + 1 < width ? (indices[y * width + x + 1] ?? 0) : 0;
-      const below = y + 1 < height ? (indices[(y + 1) * width + x] ?? 0) : 0;
       const style = resolveTerrainStyle(value);
-      if (right !== value) {
-        context.strokeStyle = style.stroke;
+      const nextRight = x + 1 < boardWidth ? (indices[rowStart + x + 1] ?? 0) : 0;
+      const nextBelow = y + 1 < boardHeight ? (indices[rowStart + boardWidth + x] ?? 0) : 0;
+      context.strokeStyle = style.stroke;
+      if (nextRight !== value) {
         context.beginPath();
         context.moveTo(x + 1, y);
         context.lineTo(x + 1, y + 1);
         context.stroke();
       }
-      if (below !== value) {
-        context.strokeStyle = style.stroke;
+      if (nextBelow !== value) {
         context.beginPath();
         context.moveTo(x, y + 1);
         context.lineTo(x + 1, y + 1);
@@ -362,34 +387,41 @@ export function bakeHandDrawnLayer(
     }
   }
 
-  // ④ 装饰散布（A+B 里的 B）：确定性哈希，同一格永远同一种装饰
-  drawDecorations(context, indices, width, height);
-
-  return canvas;
+  // ④ 装饰散布（确定性哈希：同一格永远同一种装饰）
+  drawDecorations(context, indices, boardWidth, boardHeight, left, top, right, bottom);
+  context.restore();
 }
 
 /**
- * 在整幅图上散布装饰符号。
+ * 在指定区域内散布装饰符号。
  * @param context 目标上下文
  * @param indices 索引栅格
- * @param width 宽
- * @param height 高
+ * @param boardWidth 白板宽
+ * @param boardHeight 白板高
+ * @param left 区域左
+ * @param top 区域上
+ * @param right 区域右
+ * @param bottom 区域下
  */
 function drawDecorations(
   context: CanvasRenderingContext2D,
   indices: Uint8Array,
-  width: number,
-  height: number,
+  boardWidth: number,
+  boardHeight: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
 ): void {
-  const range = decorationRange(0, 0, width, height, width, height, DECORATION_CELL_PX);
+  // 装饰按世界坐标的固定网格生成：即使只重烘一小块，位置也与整幅一致
+  const range = decorationRange(left, top, right - left, bottom - top, boardWidth, boardHeight, DECORATION_CELL_PX);
   context.lineWidth = 1.2;
   context.lineCap = "round";
   for (let cellRow = range.minRow; cellRow <= range.maxRow; cellRow += 1) {
     for (let cellCol = range.minCol; cellCol <= range.maxCol; cellCol += 1) {
-      // 取单元中心的地形，决定这里该长什么
-      const cx = Math.min(width - 1, Math.floor((cellCol + 0.5) * DECORATION_CELL_PX));
-      const cy = Math.min(height - 1, Math.floor((cellRow + 0.5) * DECORATION_CELL_PX));
-      const value = indices[cy * width + cx] ?? 0;
+      const cx = Math.min(boardWidth - 1, Math.floor((cellCol + 0.5) * DECORATION_CELL_PX));
+      const cy = Math.min(boardHeight - 1, Math.floor((cellRow + 0.5) * DECORATION_CELL_PX));
+      const value = indices[cy * boardWidth + cx] ?? 0;
       if (value === 0) {
         continue;
       }
@@ -397,8 +429,13 @@ function drawDecorations(
       if (!style.decoration) {
         continue;
       }
-      const density = decorationDensityFor(style.pattern);
-      const instance = decorationAt(cellCol, cellRow, style.decoration, density, DECORATION_CELL_PX);
+      const instance = decorationAt(
+        cellCol,
+        cellRow,
+        style.decoration,
+        decorationDensityFor(style.pattern),
+        DECORATION_CELL_PX,
+      );
       if (!instance) {
         continue;
       }

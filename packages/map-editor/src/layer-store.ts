@@ -11,7 +11,8 @@
  */
 import type { MapHostAdapter, MapLayer, TerrainBrush } from "@worldmap/core";
 import { terrainPaletteToUint32 } from "@worldmap/core";
-import { bakeHandDrawnLayer, createPaperTexture, type RenderStyleMode } from "./terrain-render";
+import { bakeHandDrawnLayer, bakeRegionInto, createPaperTexture, PAPER_BASE, type RenderStyleMode } from "./terrain-render";
+import { DECORATION_CELL_PX } from "./terrain-style";
 import {
   RasterTileStore,
   TILE_SIZE,
@@ -464,13 +465,63 @@ export class MapLayerStore {
     this.refreshBitmap(layerId, rect);
   }
 
-  /** 重画所有图层的渲染位图（撤销、显隐变化、模式切换后调用） */
+  /**
+   * 重画所有图层的渲染位图（撤销、重做、显隐变化后调用）。
+   *
+   * 手绘模式下**按脏区域局部重烘**：整幅重烘一张 2048 宽的手绘位图约需数百毫秒，
+   * 撤销 / 重做这类高频操作会明显卡顿；只重烘刚才被改动的矩形就快得多。
+   * 若此时还没有烘过（缓存不存在），什么都不做——下一次绘制时会整幅烘。
+   */
   redrawAllRenderBitmaps(): void {
-    if (this.styleMode === "handdrawn") {
-      this.handDrawnBitmaps.clear();
+    if (this.styleMode !== "handdrawn") {
+      this.redrawAllBitmaps();
       return;
     }
-    this.redrawAllBitmaps();
+    for (const [layerId, store] of this.rasterStores) {
+      const region = store.takeDirtyRect();
+      const canvas = this.handDrawnBitmaps.get(layerId);
+      if (!canvas) {
+        // 还没烘过：无需处理，下一次绘制会整幅烘
+        continue;
+      }
+      if (!region) {
+        // 有缓存但拿不到脏区域（理论上不该发生）：宁可整幅重烘，也不能让画面停在旧内容
+        this.handDrawnBitmaps.delete(layerId);
+        continue;
+      }
+      this.rebakeRegion(layerId, region);
+    }
+  }
+
+  /**
+   * 局部重烘手绘位图的某块区域。
+   * @param layerId 图层 id
+   * @param rect 世界像素矩形
+   */
+  private rebakeRegion(layerId: string, rect: PixelRect): void {
+    const store = this.storeOf(layerId);
+    const canvas = this.handDrawnBitmaps.get(layerId);
+    if (!store || !canvas) {
+      return;
+    }
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+    // 外扩一点，避免地形边界描边与装饰在接缝处被切断
+    const margin = DECORATION_CELL_PX;
+    const left = Math.max(0, rect.x - margin);
+    const top = Math.max(0, rect.y - margin);
+    const right = Math.min(store.width, rect.x + rect.width + margin);
+    const bottom = Math.min(store.height, rect.y + rect.height + margin);
+    const region = { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+    if (region.width === 0 || region.height === 0) {
+      return;
+    }
+    // 先清掉该区域（露出纸张色），再重烘：否则旧图案会残留
+    context.fillStyle = PAPER_BASE;
+    context.fillRect(region.x, region.y, region.width, region.height);
+    bakeRegionInto(context, store.indices, store.width, store.height, region, store.palette, this.paper());
   }
 }
 
