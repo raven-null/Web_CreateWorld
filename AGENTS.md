@@ -75,3 +75,6 @@ packages/
 
 - 提交信息用中文，格式：`类型: 简述`（如 `feat: 条目编辑器自动保存`、`fix: 修复链接解析`）
 - 不提交密钥、`.dev.vars`、本地数据文件
+- ⚠️ **不要用 `git add -A` / `git add .`**：工作区里可能同时存在他人（或自己）尚未完成、不属于本次改动的文件，一把梭会把无关改动混进同一个提交，也会误加只读参考目录（如 `.tmp-ref`）。
+  只添加本次明确改动的路径，例如 `git add apps/web/src/pages/MapEditorPage.tsx docs/地图编辑器更新日志.md`；
+  提交后用 `git show --stat HEAD` 核对文件清单，再推送。
