@@ -1769,6 +1769,73 @@ mark {
   margin-bottom: 14px;
 }
 
+/* 登录 / 注册 模式切换：药丸式标签，避免与标题抢视线 */
+.wme-auth-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-soft);
+}
+
+.wme-auth-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+.wme-auth-tab:hover {
+  color: var(--text);
+}
+
+.wme-auth-tab.is-active {
+  background: var(--accent-soft);
+  color: #f4efe6;
+}
+
+/* 字段标签右侧的补充说明（如「至少 8 位」） */
+.wme-field-hint {
+  margin-left: 8px;
+  color: var(--text-faint);
+  letter-spacing: 0;
+}
+
+/* 邀请码校验结果提示 */
+.wme-invite-note {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--accent);
+}
+
+.wme-invite-note.is-error {
+  color: var(--danger);
+}
+
+/* 行内文字按钮（「去登录」「用邀请码注册」） */
+.wme-link {
+  border: none;
+  background: transparent;
+  padding: 0 2px;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.wme-link:hover {
+  color: var(--text);
+}
+
 .wme-login-title {
   margin: 0 0 6px;
   font-family: var(--font-serif);
