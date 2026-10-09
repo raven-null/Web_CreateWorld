@@ -145,6 +145,8 @@ export function MapEditor(props: MapEditorProps) {
   const [statsOpen, setStatsOpen] = useState(false);
   const [radiusOpen, setRadiusOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  /** 全屏工作区：让画布铺满页面（编辑器越长，能看到的画布越大） */
+  const [fullscreen, setFullscreen] = useState(false);
   /** 白板改尺寸面板与输入 */
   const [resizeOpen, setResizeOpen] = useState(false);
   const [resizeWidth, setResizeWidth] = useState(2048);
@@ -263,7 +265,8 @@ export function MapEditor(props: MapEditorProps) {
         }
         rebuildOffscreen();
 
-        // 标记：走宿主既有接口，宿主未实现则列表为空（缺能力不影响绘制）
+        // 标记：走宿主既有接口。**加载失败不能中断后续初始化**——
+        // 否则绘制 / 撤销这些核心能力会一起失效（这里踩过一次）
         const markerStore = new MarkerStore({
           adapter,
           mapId,
@@ -272,10 +275,19 @@ export function MapEditor(props: MapEditorProps) {
           revision: result.revision,
         });
         markerStoreRef.current = markerStore;
-        const markerTotal = await markerStore.load();
-        if (!cancelled) {
-          setMarkerCount(markerTotal);
-          setMarkerTick((tick) => tick + 1);
+        try {
+          const markerTotal = await markerStore.load();
+          if (!cancelled) {
+            setMarkerCount(markerTotal);
+            setMarkerTick((tick) => tick + 1);
+          }
+        } catch (err) {
+          // 标记列表读不到不影响画地图：提示一次即可
+          markerStoreRef.current = null;
+          if (!cancelled) {
+            setMarkerCount(0);
+            props.onError?.(new Error(`标记列表加载失败：${(err as Error).message}`));
+          }
         }
 
         // 本地草稿：若存在且比服务端更新，提示恢复（不静默覆盖，也不静默丢弃）
@@ -303,6 +315,8 @@ export function MapEditor(props: MapEditorProps) {
       } catch (err) {
         if (!cancelled) {
           setError((err as Error).message);
+          // 加载失败要明确告知，而不是让界面一直停在「正在加载」
+          props.onError?.(err as Error);
         }
       }
     })();
@@ -1366,17 +1380,23 @@ export function MapEditor(props: MapEditorProps) {
     [scheduleAutoSave],
   );
 
-  /** 滚轮缩放（以光标为锚点） */
-  const handleWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
+  /**
+   * 滚轮缩放（以光标为锚点）。
+   *
+   * 实现要点：**必须用原生 addEventListener + { passive: false }**。
+   * React 的 `onWheel` 是 passive 监听，`preventDefault()` 会被忽略，
+   * 结果是「缩放的同时页面也在滚动」——这是之前踩到的真实问题。
+   */
+  const handleWheelCore = useCallback((clientX: number, clientY: number, deltaY: number): void => {
     const canvas = canvasRef.current;
     if (!canvas) {
       return;
     }
     const rect = canvas.getBoundingClientRect();
-    const cursorX = event.clientX - rect.left;
-    const cursorY = event.clientY - rect.top;
+    const cursorX = clientX - rect.left;
+    const cursorY = clientY - rect.top;
     setViewport((current) => {
-      const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+      const factor = deltaY < 0 ? 1.15 : 1 / 1.15;
       const nextZoom = clamp(current.zoom * factor, MIN_ZOOM, MAX_ZOOM);
       const worldX = current.offsetX + cursorX / current.zoom;
       const worldY = current.offsetY + cursorY / current.zoom;
@@ -1388,6 +1408,24 @@ export function MapEditor(props: MapEditorProps) {
     });
   }, []);
 
+  // 让最新实现可被原生监听器读到（避免每次重渲染重新绑定）
+  const handleWheelRef = useRef(handleWheelCore);
+  handleWheelRef.current = handleWheelCore;
+
+  /** 绑定非 passive 的滚轮监听：阻止页面跟着一起滚 */
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+    const onWheel = (event: WheelEvent): void => {
+      event.preventDefault();
+      handleWheelRef.current(event.clientX, event.clientY, event.deltaY);
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
+
   /** 只重绘主画布（光标移动等轻量更新） */
   const drawCursorOnly = useCallback((): void => {
     setHistoryTick((tick) => tick + 1);
@@ -1395,12 +1433,24 @@ export function MapEditor(props: MapEditorProps) {
 
   /** 适应窗口 */
   const handleFit = useCallback((): void => {
-    const container = containerRef.current;
     const store = storeRef.current;
-    if (!container || !store) {
-      return;
-    }
-    setViewport(fitViewport(store.width, store.height, container.clientWidth, container.clientHeight));
+    const apply = (): void => {
+      const container = containerRef.current;
+      const current = storeRef.current;
+      if (!container || !current) {
+        return;
+      }
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (width <= 0 || height <= 0) {
+        return;
+      }
+      setViewport(fitViewport(current.width, current.height, width, height));
+    };
+    apply();
+    // 布局刚变化（切全屏、容器高度改变）时尺寸可能还没稳定，下一帧再算一次
+    window.requestAnimationFrame(apply);
+    void store;
   }, []);
 
   /** 确认新增标记 */
@@ -1453,9 +1503,25 @@ export function MapEditor(props: MapEditorProps) {
     [props],
   );
 
-  /** 快捷键：B / E / I / V、Ctrl+Z、Ctrl+Shift+Z、Ctrl+S */
+  /** 全屏时锁定页面滚动，退出时恢复（否则滚轮会把背后的页面滚走） */
+  useEffect(() => {
+    if (!fullscreen) {
+      return;
+    }
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [fullscreen]);
+
+  /** 快捷键：B / E / I / V、Ctrl+Z、Ctrl+Shift+Z、Ctrl+S、Esc 退出全屏 */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setFullscreen(false);
+        return;
+      }
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
         return;
@@ -1503,6 +1569,17 @@ export function MapEditor(props: MapEditorProps) {
         gap: 8,
         fontFamily: theme.fontSans,
         color: theme.text,
+        // 全屏时铺满整页（含背景，避免露出宿主页面）
+        ...(fullscreen
+          ? {
+              position: "fixed" as const,
+              inset: 0,
+              zIndex: 60,
+              padding: 10,
+              background: theme.background,
+              overflow: "hidden",
+            }
+          : {}),
       }}
     >
       {/* 顶部动作栏 */}
@@ -1558,6 +1635,12 @@ export function MapEditor(props: MapEditorProps) {
         <ToolButton theme={theme} label="重做" disabled={!canRedo} onClick={redo} />
         <span style={dividerStyle(theme)} />
         <ToolButton theme={theme} label="适应" onClick={handleFit} />
+        <ToolButton
+          theme={theme}
+          active={fullscreen}
+          label={fullscreen ? "退出全屏" : "全屏"}
+          onClick={() => setFullscreen((value) => !value)}
+        />
         {!readOnly && (
           <ToolButton
             theme={theme}
@@ -1635,17 +1718,20 @@ export function MapEditor(props: MapEditorProps) {
         ref={containerRef}
         style={{
           position: "relative",
-          // 固定工作区高度：编辑器是全屏工作区（方案 §12.4）
-          height: 520,
+          // 全屏时铺满剩余空间；页面内时也尽量高（编辑器越长看到的画布越大）
+          ...(fullscreen
+            ? { flex: 1, minHeight: 0 }
+            : { height: "calc(100vh - 320px)", minHeight: 420 }),
           border: `1px solid ${theme.border}`,
           borderRadius: theme.radius,
           overflow: "hidden",
           background: theme.background,
+          // 阻止滚轮缩放被浏览器当成页面滚动（与 canvas 上的非 passive 监听配合）
+          overscrollBehavior: "contain",
         }}
       >
         <canvas
           ref={canvasRef}
-          onWheel={handleWheel}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -2067,6 +2153,8 @@ export function MapEditor(props: MapEditorProps) {
           </span>
         )}
         <span>待保存瓦片 {dirtyCount}</span>
+        {/* 历史步数：既给用户反馈，也方便一眼看出「画了但没进历史栈」这类问题 */}
+        <span>历史 {historyRef.current.undoCount} 步</span>
         {markerCount > 0 && <span>标记 {markerCount}</span>}
         {draftState !== "none" && (
           <span>{draftState === "saved" ? "本地草稿已保存" : "本地草稿：有未同步内容"}</span>
