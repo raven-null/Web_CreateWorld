@@ -47,6 +47,7 @@ import {
 } from "./brush-engine";
 import { createHistoryBaseline, HistoryStack } from "./history";
 import { exportBoardImage, downloadBlob } from "./export-image";
+import { GlobeView } from "./gl/GlobeView";
 import { MapLayerStore } from "./layer-store";
 import { LayerPanel } from "./panels/LayerPanel";
 import { MarkerStore, type CanvasMarker } from "./marker-store";
@@ -139,6 +140,8 @@ export function MapEditor(props: MapEditorProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   /** 图层面板开关 */
   const [layerPanelOpen, setLayerPanelOpen] = useState(false);
+  /** 视图模式：2D 平面（绘图台）或 3D 地球仪（展示视图） */
+  const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
   const [markerMode, setMarkerMode] = useState(false);
   const [pendingMarker, setPendingMarker] = useState<{ x: number; y: number } | null>(null);
   const [markerLabel, setMarkerLabel] = useState("");
@@ -1124,8 +1127,78 @@ export function MapEditor(props: MapEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapId, radiusKm, props.onExport, props.onError]);
 
-  /** 设定天体半径：只影响读数，不改已画内容 */
-  const handleSetRadius = useCallback((value: number): void => {
+  /**
+   * 合成所有可见栅格图层，供 3D 地球仪当贴图用。
+   *
+   * 白板本身就是球面贴图（等距圆柱），因此这里**不做任何重投影**——
+   * 从下到上按顺序「有值则覆盖」，与 2D 合成的视觉结果保持一致。
+   * 只在切到 3D 时计算一次（两百万格约几十毫秒），不常驻。
+   */
+  const compositeFor3D = useCallback((): {
+    indices: Uint8Array;
+    width: number;
+    height: number;
+    palette: TerrainBrush[];
+  } | null => {
+    const layerStore = layerStoreRef.current;
+    if (!layerStore) {
+      return null;
+    }
+    const size = layerStore.boardSize;
+    const out = new Uint8Array(size.width * size.height);
+    const layers = layerStore.visibleRasterLayers();
+    for (const layer of layers) {
+      const store = layerStore.storeOf(layer.id);
+      if (!store) {
+        continue;
+      }
+      const source = store.indices;
+      for (let i = 0; i < out.length; i += 1) {
+        const value = source[i] ?? 0;
+        if (value !== 0) {
+          out[i] = value;
+        }
+      }
+    }
+    const first = layers[0] ? layerStore.storeOf(layers[0].id) : null;
+    return { indices: out, width: size.width, height: size.height, palette: first?.palette ?? [] };
+  }, []);
+
+  /**
+   * 3D 贴图数据（只在 3D 模式下计算，且随图层/绘制/尺寸变化而重算）。
+   *
+   * 依赖里用图层摘要与脏量当版本号：它们变化就说明贴图该重算了，
+   * 比每次渲染都重跑二百万格的循环便宜得多。
+   */
+  const composite3D = useMemo(
+    () => (viewMode === "3d" ? compositeFor3D() : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      viewMode,
+      compositeFor3D,
+      layerList.map((layer) => `${layer.id}:${layer.visible ? 1 : 0}:${layer.zIndex}`).join(","),
+      dirtyCount,
+      activeLayerId,
+    ],
+  );
+
+  /**
+   * 3D 初始朝向：由 2D 视口中心换算而来（切换视图时视野连贯，不跳回原点）。
+   * 结果放进 memo，避免每帧重算。
+   */
+  const initialGlobeView = useMemo(() => {
+    const store = storeRef.current;
+    if (!store) {
+      return { lon: 0, lat: 0 };
+    }
+    const canvas = canvasRef.current;
+    const centerX = viewport.offsetX + (canvas?.clientWidth ?? 512) / 2 / viewport.zoom;
+    const centerY = viewport.offsetY + (canvas?.clientHeight ?? 512) / 2 / viewport.zoom;
+    const geo = pixelToLonLat(centerX, centerY, boardOf(store, radiusKm));
+    return { lon: geo.lon, lat: geo.lat };
+  }, [viewport, radiusKm]);
+
+  /** 设定天体半径：只影响读数，不改已画内容 */  const handleSetRadius = useCallback((value: number): void => {
     if (!Number.isFinite(value) || value <= 0) {
       return;
     }
@@ -1864,6 +1937,12 @@ export function MapEditor(props: MapEditorProps) {
         <ToolButton theme={theme} label="适应" onClick={handleFit} />
         <ToolButton
           theme={theme}
+          active={viewMode === "3d"}
+          label={viewMode === "3d" ? "回到 2D" : "3D 地球仪"}
+          onClick={() => setViewMode((mode) => (mode === "2d" ? "3d" : "2d"))}
+        />
+        <ToolButton
+          theme={theme}
           active={gridChoice !== 0}
           label={`网格 ${gridChoiceLabel(gridPlan.intervalDeg)}`}
           title={gridTitle}
@@ -1953,10 +2032,24 @@ export function MapEditor(props: MapEditorProps) {
         </div>
       )}
 
-      {/* 画布 */}
+      {/* 3D 地球仪：与 2D 共用同一份数据，切换视图不产生第二份数据 */}
+      {viewMode === "3d" && composite3D && storeRef.current && (
+        <GlobeView
+          theme={theme}
+          indices={composite3D.indices}
+          width={composite3D.width}
+          height={composite3D.height}
+          palette={composite3D.palette}
+          initialView={initialGlobeView}
+          onError={(error) => props.onError?.(error)}
+        />
+      )}
+
+      {/* 2D 画布 */}
       <div
         ref={containerRef}
         style={{
+          display: viewMode === "2d" ? "block" : "none",
           position: "relative",
           // 全屏时铺满剩余空间；页面内时也尽量高（编辑器越长看到的画布越大）
           ...(fullscreen
