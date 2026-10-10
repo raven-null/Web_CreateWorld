@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { MapEditor } from "@worldmap/editor";
+import type { MapEditorViewSettings } from "@worldmap/core";
 import { createHttpMapHostAdapter, createIndexedDbDraftStore } from "@worldmap/editor-web";
 import parchmentUrl from "../../../../packages/map-editor/assets/terrain/paper/parchment-full.jpg";
 import { api } from "../lib/api";
 import { uploadImage } from "../lib/image-upload";
+import {
+  loadMapEditorViewSettings,
+  saveMapEditorViewSettings,
+} from "../lib/map-editor-settings";
 import { showToast } from "../lib/toast";
 
 /** 地图列表项 */
@@ -97,6 +102,21 @@ export default function MapsPage() {
   // 适配器与草稿存储：切图时重建，保证不会把上一张图的缓存带过来
   const adapter = useMemo(() => createHttpMapHostAdapter(), [activeMapId]);
   const drafts = useMemo(() => createIndexedDbDraftStore(), []);
+
+  /**
+   * 编辑器界面偏好（网格密度、渲染风格、缩放范围）。
+   *
+   * 初值读一次 localStorage 后就不再变：否则每次保存都会写回 state，
+   * 触发「保存 → 重渲染 → 再保存」的循环。
+   */
+  const viewSettingsInitial = useMemo(() => loadMapEditorViewSettings(), []);
+  const handleViewSettingsChange = useCallback((next: MapEditorViewSettings): void => {
+    saveMapEditorViewSettings(next);
+  }, []);
+  const viewSettings = useMemo(
+    () => ({ initial: viewSettingsInitial, onChange: handleViewSettingsChange }),
+    [viewSettingsInitial, handleViewSettingsChange],
+  );
 
   /**
    * 创建地图：按底图方式分流。
@@ -206,6 +226,8 @@ export default function MapsPage() {
           // stretch：整张羊皮纸铺满白板一次，没有平铺的重复感
           paperTextureUrl={parchmentUrl}
           paperFill="stretch"
+          // 界面偏好由宿主保存（插件本体不碰 localStorage）
+          viewSettings={viewSettings}
           onError={(err) => showToast("error", err.message)}
         />
       )}

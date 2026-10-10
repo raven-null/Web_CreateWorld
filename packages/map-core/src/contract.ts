@@ -155,6 +155,22 @@ export interface MapEditorFeatures {
   };
 }
 
+/**
+ * 编辑器的界面偏好（网格密度、渲染风格、缩放范围等）。
+ *
+ * 放在宿主侧保存而不是插件里：插件本体不允许碰 localStorage（边界规则第 3 条），
+ * 各端怎么存（Web 用 localStorage、桌面用配置文件）由宿主决定。
+ */
+export interface MapEditorViewSettings {
+  /** 经纬网档位（0 = 自动按缩放选） */
+  gridIntervalDeg?: number;
+  /** 渲染风格：简约色块 / 手绘图案 */
+  renderStyle?: "flat" | "handdrawn";
+  /** 缩放范围（缩放倍率） */
+  zoomMin?: number;
+  zoomMax?: number;
+}
+
 /** 组件 props */
 export interface MapEditorProps {
   mapId: string;
@@ -190,6 +206,15 @@ export interface MapEditorProps {
   paperTextureTileSize?: number;
   locale?: "zh-CN" | "en";
   features?: MapEditorFeatures;
+  /**
+   * 界面偏好：宿主注入初值，并在用户改动时收到通知以便自行保存。
+   *
+   * 插件不落盘（不碰 localStorage），只在自己的生命周期里用这份状态。
+   */
+  viewSettings?: {
+    initial?: MapEditorViewSettings;
+    onChange?: (settings: MapEditorViewSettings) => void;
+  };
   onSaveStateChange?: (state: SaveState) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onExport?: (blob: Blob, suggestedName: string) => void | Promise<void>;

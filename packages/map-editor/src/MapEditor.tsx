@@ -18,8 +18,11 @@ import {
   encodeTile,
   formatArea,
   formatDistance,
+  gridChoiceLabel,
   kilometersPerPixelLon,
+  nextGridChoice,
   pixelToLonLat,
+  planGrid,
   scaleBar,
   type BoardSpec,
   type GeoPoint,
@@ -60,11 +63,16 @@ import {
 import { RasterTileStore, TILE_SIZE, tileRangeOf, type PixelRect } from "./tile-store";
 import { resolveTheme, themeToCssVars } from "./theme";
 
-/** 缩放范围：适应窗口 ~ 32×，自由连续（方案 §5.6.1） */
-const MIN_ZOOM = 0.05;
-const MAX_ZOOM = 32;
-/** 经纬网间隔（度） */
-const GRATICULE_STEP = 30;
+/**
+ * 缩放范围：适应窗口 ~ 32×，自由连续（方案 §5.6.1，具体值可由宿主偏好覆盖）。
+ *
+ * 下限从 0.05 收到 0.3：再缩小整个白板只剩指甲盖大，而经纬网会被迫退到 30°，
+ * 既看不清也画不准。
+ */
+const DEFAULT_MIN_ZOOM = 0.3;
+const DEFAULT_MAX_ZOOM = 32;
+/** 相邻经纬网线允许的最小屏幕间距（像素）：低于它就把格子调粗 */
+const GRID_MIN_SCREEN_GAP = 32;
 /** 停止绘制后自动保存的延迟（毫秒） */
 const IDLE_SAVE_DELAY = 3000;
 /** 单次保存最多提交的瓦片数（与后端上限一致） */
@@ -159,7 +167,19 @@ export function MapEditor(props: MapEditorProps) {
   /** 全屏工作区：让画布铺满页面（编辑器越长，能看到的画布越大） */
   const [fullscreen, setFullscreen] = useState(false);
   /** 渲染风格：简约色块 / 手绘图案（方案 §8 的观感取向） */
-  const [renderStyle, setRenderStyle] = useState<RenderStyleMode>("handdrawn");
+  const [renderStyle, setRenderStyle] = useState<RenderStyleMode>(
+    () => props.viewSettings?.initial?.renderStyle ?? "handdrawn",
+  );
+  /**
+   * 经纬网（格子）档位：0 = 自动按缩放选，其余为具体度数。
+   * 初值来自宿主的偏好（各端自己保存），插件本体不落盘。
+   */
+  const [gridChoice, setGridChoice] = useState<number>(() => props.viewSettings?.initial?.gridIntervalDeg ?? 0);
+  /** 缩放范围（宿主可覆盖默认值） */
+  const [zoomRange] = useState(() => ({
+    min: props.viewSettings?.initial?.zoomMin ?? DEFAULT_MIN_ZOOM,
+    max: props.viewSettings?.initial?.zoomMax ?? DEFAULT_MAX_ZOOM,
+  }));
   /**
    * 当前纸张是不是亮纸（宿主提供羊皮纸这类浅色素材时为 true）。
    * 画布上的比例尺与测量读数要按它反着配色，否则亮底配浅字看不清。
@@ -181,6 +201,12 @@ export function MapEditor(props: MapEditorProps) {
   const radiusKmRef = useRef(6371);
   /** 渲染风格的最新值（给不随它重建的回调读） */
   const renderStyleRef = useRef<RenderStyleMode>("handdrawn");
+  /** 经纬网档位的最新值（渲染循环不因它重建，只靠重渲染读最新值） */
+  const gridChoiceRef = useRef(0);
+  gridChoiceRef.current = gridChoice;
+  /** 缩放范围的最新值（滚轮回调不随它重建） */
+  const zoomRangeRef = useRef(zoomRange);
+  zoomRangeRef.current = zoomRange;
   /**
    * 当前正在绘制的栅格图层 id（由图层面板切换）。
    * 绘制、撤销、吸管都以它为准；`MapLayerStore` 负责多图层的实际读写。
@@ -440,6 +466,25 @@ export function MapEditor(props: MapEditorProps) {
     setHistoryTick((tick) => tick + 1);
   }, []);
 
+  /**
+   * 切换经纬网档位（格子大小）。
+   * 顺序是 自动 → 30° → 15° → 10° → 5° → 2° → 1° → 自动。
+   */
+  const handleCycleGrid = useCallback((): void => {
+    setGridChoice((current) => nextGridChoice(current));
+  }, []);
+
+  /** 界面偏好变化时上报给宿主（各端自己决定怎么保存） */
+  useEffect(() => {
+    props.viewSettings?.onChange?.({
+      gridIntervalDeg: gridChoice,
+      renderStyle,
+      zoomMin: zoomRange.min,
+      zoomMax: zoomRange.max,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gridChoice, renderStyle]);
+
   /** 主动保存（把各图层的脏瓦片按层分批提交给宿主） */
   const saveNow = useCallback(async (): Promise<void> => {
     const layerStore = layerStoreRef.current;
@@ -631,11 +676,20 @@ export function MapEditor(props: MapEditorProps) {
     }
 
     if (store && zoom >= 0.3) {
+      // 经纬网（格子）：档位可由用户选择，过密时自动降级，永远保持可读的屏幕间距
+      const gridPlan = planGrid({
+        boardWidth: store.width,
+        boardHeight: store.height,
+        zoom,
+        choice: gridChoiceRef.current,
+        minScreenGap: GRID_MIN_SCREEN_GAP,
+      });
+      const step = gridPlan.intervalDeg;
       // 经纬网线条按纸张明暗反色：羊皮纸这类亮纸上的浅色线是看不见的
       context.strokeStyle = paperLight ? "rgba(58, 44, 30, 0.22)" : "rgba(232, 224, 211, 0.10)";
       context.lineWidth = 1;
       context.beginPath();
-      for (let lon = -180; lon <= 180; lon += GRATICULE_STEP) {
+      for (let lon = -180; lon <= 180; lon += step) {
         const worldX = ((lon + 180) / 360) * store.width;
         const screenX = (worldX - offsetX) * zoom;
         if (screenX < 0 || screenX > cssWidth) {
@@ -644,7 +698,7 @@ export function MapEditor(props: MapEditorProps) {
         context.moveTo(screenX, 0);
         context.lineTo(screenX, cssHeight);
       }
-      for (let lat = -90; lat <= 90; lat += GRATICULE_STEP) {
+      for (let lat = -90; lat <= 90; lat += step) {
         const worldY = ((90 - lat) / 180) * store.height;
         const screenY = (worldY - offsetY) * zoom;
         if (screenY < 0 || screenY > cssHeight) {
@@ -785,7 +839,7 @@ export function MapEditor(props: MapEditorProps) {
     }
 
     context.restore();
-  }, [viewport, theme, meta, historyTick, saveState, markerTick, measurePoints, measurePending, measureResult, radiusKm, paperLight]);
+  }, [viewport, theme, meta, historyTick, saveState, markerTick, measurePoints, measurePending, measureResult, radiusKm, paperLight, gridChoice]);
 
   /** 屏幕坐标 → 世界像素 */
   const toWorld = useCallback((screenX: number, screenY: number): { x: number; y: number } => {
@@ -1549,7 +1603,7 @@ export function MapEditor(props: MapEditorProps) {
     const cursorY = clientY - rect.top;
     setViewport((current) => {
       const factor = deltaY < 0 ? 1.15 : 1 / 1.15;
-      const nextZoom = clamp(current.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+      const nextZoom = clamp(current.zoom * factor, zoomRangeRef.current.min, zoomRangeRef.current.max);
       const worldX = current.offsetX + cursorX / current.zoom;
       const worldY = current.offsetY + cursorY / current.zoom;
       return {
@@ -1709,6 +1763,23 @@ export function MapEditor(props: MapEditorProps) {
   /** 画布上有内容时「重置画布」才可用（与用户约定：有东西就能点） */
   const canReset = hasCanvasContent();
   const saving = saveState === "saving";
+  /**
+   * 当前实际生效的格子密度：档位 + 缩放共同决定。
+   * 界面要把它显示出来，否则用户选了 5° 却看到 10° 的格子会以为是 bug。
+   */
+  const gridPlan = planGrid({
+    boardWidth: storeRef.current?.width ?? 2048,
+    boardHeight: storeRef.current?.height ?? 1024,
+    zoom: viewport.zoom,
+    choice: gridChoice,
+    minScreenGap: GRID_MIN_SCREEN_GAP,
+  });
+  const gridTitle =
+    gridPlan.reason === "too-dense"
+      ? `当前缩放下 ${gridChoice}° 太密，已自动用 ${gridPlan.intervalDeg}°（点一下换更细的）`
+      : gridChoice === 0
+        ? `按缩放自动选：当前 ${gridPlan.intervalDeg}°（点一下手动指定）`
+        : `格子间隔 ${gridPlan.intervalDeg}°（点一下换下一档）`;
 
   return (
     <div
@@ -1785,6 +1856,13 @@ export function MapEditor(props: MapEditorProps) {
         <ToolButton theme={theme} label="重置画布" disabled={!canReset} onClick={resetCanvas} />
         <span style={dividerStyle(theme)} />
         <ToolButton theme={theme} label="适应" onClick={handleFit} />
+        <ToolButton
+          theme={theme}
+          active={gridChoice !== 0}
+          label={`网格 ${gridChoiceLabel(gridPlan.intervalDeg)}`}
+          title={gridTitle}
+          onClick={handleCycleGrid}
+        />
         <ToolButton
           theme={theme}
           active={fullscreen}
@@ -2376,13 +2454,22 @@ function devicePixelRatioNow(): number {
  * @param boardHeight 白板高
  * @param viewWidth 容器宽
  * @param viewHeight 容器高
+ * @param zoomMin 缩放下限
+ * @param zoomMax 缩放上限
  * @returns 视口
  */
-function fitViewport(boardWidth: number, boardHeight: number, viewWidth: number, viewHeight: number): Viewport {
+function fitViewport(
+  boardWidth: number,
+  boardHeight: number,
+  viewWidth: number,
+  viewHeight: number,
+  zoomMin = DEFAULT_MIN_ZOOM,
+  zoomMax = DEFAULT_MAX_ZOOM,
+): Viewport {
   if (viewWidth <= 0 || viewHeight <= 0) {
     return { zoom: 1, offsetX: 0, offsetY: 0 };
   }
-  const zoom = clamp(Math.min(viewWidth / boardWidth, viewHeight / boardHeight), MIN_ZOOM, MAX_ZOOM);
+  const zoom = clamp(Math.min(viewWidth / boardWidth, viewHeight / boardHeight), zoomMin, zoomMax);
   return {
     zoom,
     offsetX: boardWidth / 2 - viewWidth / 2 / zoom,
@@ -2498,14 +2585,17 @@ function ToolButton(props: {
   label: string;
   active?: boolean;
   disabled?: boolean;
+  /** 悬停说明（用于把「为什么是这个档位」讲清楚） */
+  title?: string;
   onClick: () => void;
 }): React.ReactElement {
-  const { theme, label, active, disabled, onClick } = props;
+  const { theme, label, active, disabled, title, onClick } = props;
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       style={{
         ...buttonStyle(theme),
         background: active ? theme.accent : "transparent",

@@ -16,3 +16,4 @@ export * from "./geo-area";
 export * from "./units";
 export * from "./feature-visibility";
 export * from "./scale-hints";
+export * from "./grid";
