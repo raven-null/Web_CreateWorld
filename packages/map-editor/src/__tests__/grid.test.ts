@@ -20,7 +20,7 @@ const base: GridContext = {
   boardHeight: 1024,
   zoom: 1,
   choice: GRID_AUTO,
-  minScreenGap: 32,
+  minScreenGap: 28,
 };
 
 describe("经纬网密度", () => {
@@ -33,9 +33,8 @@ describe("经纬网密度", () => {
     expect(180 / plan.intervalDeg).toBeCloseTo(6, 5);
   });
 
-  it("1× 缩放下 5° 还剩约 28px：偏密但没到下限，按用户选择保留", () => {
-    // 把下限调到 24px，模拟「用户就是想要细格子」的偏好
-    const plan = planGrid({ ...base, choice: 5, minScreenGap: 24 });
+  it("1× 缩放下 5° 能用（约 28.4px 间距，72×36 个格子）", () => {
+    const plan = planGrid({ ...base, choice: 5 });
     expect(plan.intervalDeg).toBe(5);
     expect(plan.reason).toBe("user");
     expect(plan.lonGapPx).toBeCloseTo(28.44, 1);
@@ -43,11 +42,23 @@ describe("经纬网密度", () => {
     expect(180 / plan.intervalDeg).toBeCloseTo(36, 5);
   });
 
-  it("1× 缩放、下限 32px 时 5° 偏密，会自动降到 10°", () => {
-    const plan = planGrid({ ...base, choice: 5 });
-    expect(plan.intervalDeg).toBe(10);
+  it("再细的 2° 在 1× 下会被挡住，自动降到 5°", () => {
+    const plan = planGrid({ ...base, choice: 2 });
+    expect(plan.intervalDeg).toBe(5);
     expect(plan.reason).toBe("too-dense");
     expect(plan.lonGapPx).toBeGreaterThanOrEqual(base.minScreenGap);
+  });
+
+  it("放大到 5× 时 1° 才能用（2048×1024 白板下经纬线等距，判定取较小的一边）", () => {
+    const atFour = planGrid({ ...base, zoom: 4, choice: 1 });
+    expect(atFour.intervalDeg).toBe(2);
+    expect(atFour.reason).toBe("too-dense");
+
+    const atFive = planGrid({ ...base, zoom: 5, choice: 1 });
+    expect(atFive.intervalDeg).toBe(1);
+    expect(atFive.reason).toBe("user");
+    expect(atFive.lonGapPx).toBeCloseTo(28.44, 1);
+    expect(atFive.latGapPx).toBeCloseTo(28.44, 1);
   });
 
   it("缩到很小的时候，用户选的小格子会自动降到更粗的档位（不会糊）", () => {

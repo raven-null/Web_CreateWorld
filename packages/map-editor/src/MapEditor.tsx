@@ -71,8 +71,13 @@ import { resolveTheme, themeToCssVars } from "./theme";
  */
 const DEFAULT_MIN_ZOOM = 0.3;
 const DEFAULT_MAX_ZOOM = 32;
-/** 相邻经纬网线允许的最小屏幕间距（像素）：低于它就把格子调粗 */
-const GRID_MIN_SCREEN_GAP = 32;
+/**
+ * 相邻经纬网线允许的最小屏幕间距（像素）：低于它就把格子调粗。
+ *
+ * 取 28 而不是更宽松的值：2048×1024 的白板在 1× 缩放下每度约 5.7px，
+ * 28px 刚好放行 5°（约 28.4px、72×36 个格子），把 5° 挡在外面就太保守了。
+ */
+const GRID_MIN_SCREEN_GAP = 28;
 /** 停止绘制后自动保存的延迟（毫秒） */
 const IDLE_SAVE_DELAY = 3000;
 /** 单次保存最多提交的瓦片数（与后端上限一致） */
