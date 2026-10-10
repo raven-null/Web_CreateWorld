@@ -66,7 +66,11 @@ float graticuleMask(vec2 uv) {
 }
 
 void main() {
-  vec2 uv = uTextureFlipV > 0.5 ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
+  vec2 uv = vUv;
+  // 需要翻转时显式赋值，避免三元表达式在某些驱动上的兼容问题
+  if (uTextureFlipV > 0.5) {
+    uv = vec2(vUv.x, 1.0 - vUv.y);
+  }
   vec4 texel = texture(uTexture, uv);
 
   // 透明区域给一个深水底色，避免地球出现「破洞」
@@ -185,7 +189,8 @@ void main() {
   vec2 local = fract(uv);
 
   float total = 0.0;
-  // 检查 3×3 邻域，避免星点被格子边界裁掉
+  // 检查 3×3 邻域，避免星点被格子边界裁掉。
+  // 循环变量显式声明为 int、坐标显式转 float —— 部分驱动对隐式 int→float 转换不宽容。
   for (int y = -1; y <= 1; y++) {
     for (int x = -1; x <= 1; x++) {
       vec2 neighbor = vec2(float(x), float(y));

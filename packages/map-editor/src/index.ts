@@ -20,4 +20,5 @@ export * from "./terrain-render";
 export * from "./terrain-style";
 export * from "./tile-store";
 export * from "./panels/LayerPanel";
+export * as globeShaders from "./gl/shaders";
 export { MapEditor } from "./MapEditor";

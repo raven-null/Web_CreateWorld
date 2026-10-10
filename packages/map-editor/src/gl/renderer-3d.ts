@@ -153,6 +153,14 @@ export function createGlobeRenderer(options: GlobeRendererOptions): GlobeRendere
   const atmosphereProgram = createProgram(gl, ATMOSPHERE_VERTEX_SHADER, ATMOSPHERE_FRAGMENT_SHADER);
   const starfieldProgram = createProgram(gl, STARFIELD_VERTEX_SHADER, STARFIELD_FRAGMENT_SHADER);
   if (!globeProgram || !atmosphereProgram || !starfieldProgram) {
+    // 失败原因一定要打出来：界面上只会说「不支持 WebGL2」，
+    // 但那可能是环境问题，也可能是着色器编译失败，处理方式完全不同
+    const reasons = [
+      globeProgram ? null : "球面程序链接失败",
+      atmosphereProgram ? null : "大气程序链接失败",
+      starfieldProgram ? null : "星空程序链接失败",
+    ].filter((item): item is string => item !== null);
+    console.error("[worldmap/3d] 着色器初始化失败：", reasons.join("；"), gl.getError());
     return null;
   }
 
@@ -160,6 +168,7 @@ export function createGlobeRenderer(options: GlobeRendererOptions): GlobeRendere
   const atmosphereMesh = createSphereMesh(gl, 64, 32);
   const quad = createFullscreenQuad(gl);
   if (!sphere || !atmosphereMesh || !quad) {
+    console.error("[worldmap/3d] 网格创建失败（可能是显存或上下文丢失）");
     return null;
   }
 
@@ -463,15 +472,19 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 /**
- * 编译着色器并链接程序。
+ * 编译着色器并链接程序；失败时把编译 / 链接日志打到控制台。
+ *
+ * 这一步的日志很重要：界面上失败只会提示「不支持 WebGL2」，
+ * 但那可能是环境问题，也可能是着色器编译失败，两者的处理方式完全不同。
+ *
  * @param gl WebGL2 上下文
  * @param vertexSource 顶点着色器源码
  * @param fragmentSource 片元着色器源码
  * @returns 程序对象；编译或链接失败返回 null
  */
 function createProgram(gl: WebGL2RenderingContext, vertexSource: string, fragmentSource: string): WebGLProgram | null {
-  const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource, "顶点");
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource, "片元");
   if (!vertex || !fragment) {
     return null;
   }
@@ -485,21 +498,27 @@ function createProgram(gl: WebGL2RenderingContext, vertexSource: string, fragmen
   gl.deleteShader(vertex);
   gl.deleteShader(fragment);
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error("[worldmap/3d] 程序链接失败：", gl.getProgramInfoLog(program));
     gl.deleteProgram(program);
     return null;
   }
   return program;
 }
 
-/** 编译单个着色器 */
 /**
- * 编译单个着色器。
+ * 编译单个着色器；失败时打印具体原因（含行号）。
  * @param gl WebGL2 上下文
  * @param type 着色器类型
  * @param source 源码
+ * @param label 日志标签（顶点 / 片元）
  * @returns 着色器对象；失败返回 null
  */
-function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null {
+function compileShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+  label: string,
+): WebGLShader | null {
   const shader = gl.createShader(type);
   if (!shader) {
     return null;
@@ -507,6 +526,7 @@ function compileShader(gl: WebGL2RenderingContext, type: number, source: string)
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error(`[worldmap/3d] ${label}着色器编译失败：`, gl.getShaderInfoLog(shader));
     gl.deleteShader(shader);
     return null;
   }
