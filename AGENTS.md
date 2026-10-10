@@ -78,6 +78,9 @@ docs/       方案与设计文档
 - 修改代码后执行 `pnpm deploy` 即发布；数据库结构变更先本地加迁移文件，再执行远程迁移命令
 - ⚠️ **git 推送偶发连不上 GitHub 时的处理**：现象为 `Failed to connect to github.com:443 after 21000 ms`（`Test-NetConnection github.com -Port 443` 却显示可达）。原因是 git 默认走 HTTP/2，在当前网络下不稳定；解决办法是强制 HTTP/1.1：
   `git -c http.version=HTTP/1.1 push origin main`
+- ⚠️ **`github.com:443` 被阻断时的绕行**（2026-10-09 实测）：现象为 HTTPS 一直 `Failed to connect`，但同一时间 `ssh.github.com:443`、`codeload.github.com`、`api.github.com` 都是通的 —— 属**单域名阻断**，不是整体断网。此时改用 SSH 走 443 端口即可（本机 `~/.ssh` 已有可用密钥，`ssh -T -p 443 git@ssh.github.com` 返回 `Hi raven-null!` 即为正常）：
+  `git push ssh://git@ssh.github.com:443/raven-null/Web_CreateWorld.git main:main`
+  诊断命令：`Test-NetConnection github.com -Port 443 -InformationLevel Quiet` 对多个 GitHub 域名各测一次，看是否只有主域不通。
 
 ## 提交规范
 
