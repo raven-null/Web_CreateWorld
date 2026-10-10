@@ -20,7 +20,7 @@ const base: GridContext = {
   boardHeight: 1024,
   zoom: 1,
   choice: GRID_AUTO,
-  minScreenGap: 28,
+  minScreenGap: 24,
 };
 
 describe("经纬网密度", () => {
@@ -42,6 +42,12 @@ describe("经纬网密度", () => {
     expect(180 / plan.intervalDeg).toBeCloseTo(36, 5);
   });
 
+  it("自动档位在 1× 缩放下落在 5°（既细又清爽）", () => {
+    const plan = planGrid({ ...base });
+    expect(plan.intervalDeg).toBe(5);
+    expect(plan.reason).toBe("auto");
+  });
+
   it("再细的 2° 在 1× 下会被挡住，自动降到 5°", () => {
     const plan = planGrid({ ...base, choice: 2 });
     expect(plan.intervalDeg).toBe(5);
@@ -49,16 +55,16 @@ describe("经纬网密度", () => {
     expect(plan.lonGapPx).toBeGreaterThanOrEqual(base.minScreenGap);
   });
 
-  it("放大到 5× 时 1° 才能用（2048×1024 白板下经纬线等距，判定取较小的一边）", () => {
+  it("放大到 5.7× 时 1° 才能用（2048×1024 白板下经纬线等距，判定取较小的一边）", () => {
     const atFour = planGrid({ ...base, zoom: 4, choice: 1 });
     expect(atFour.intervalDeg).toBe(2);
     expect(atFour.reason).toBe("too-dense");
 
-    const atFive = planGrid({ ...base, zoom: 5, choice: 1 });
-    expect(atFive.intervalDeg).toBe(1);
-    expect(atFive.reason).toBe("user");
-    expect(atFive.lonGapPx).toBeCloseTo(28.44, 1);
-    expect(atFive.latGapPx).toBeCloseTo(28.44, 1);
+    const atSix = planGrid({ ...base, zoom: 6, choice: 1 });
+    expect(atSix.intervalDeg).toBe(1);
+    expect(atSix.reason).toBe("user");
+    expect(atSix.lonGapPx).toBeCloseTo(34.13, 1);
+    expect(atSix.latGapPx).toBeCloseTo(34.13, 1);
   });
 
   it("缩到很小的时候，用户选的小格子会自动降到更粗的档位（不会糊）", () => {
