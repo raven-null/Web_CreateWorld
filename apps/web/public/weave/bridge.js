@@ -357,8 +357,14 @@
         return;
       }
       showDetail(node);
-      // 双击进入条目页（与平台其它页面的习惯一致）
-      if (event.detail >= 2) {
+      /**
+       * 双击的语义按权限分流：
+       *   · 只读（未登录 / 无编辑权限）→ 打开条目页阅读；
+       *   · 可编辑 → **不做任何跳转**，把双击留给 Weave：它自己在 mousedown 里判定双击，
+       *     点标题进入标题编辑、点描述进入描述编辑（点节点上下两半都能就地改）。
+       * 早先这里无条件跳转，导致编辑模式下双击直接跳走，标题/描述根本改不了。
+       */
+      if (event.detail >= 2 && App.readOnly) {
         send({ type: "weave:open-entry", nodeId: nodeId });
       }
     },
