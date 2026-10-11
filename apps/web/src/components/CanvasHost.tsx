@@ -576,6 +576,18 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     }
   }, [active]);
 
+  /**
+   * 画布激活期间禁止整个页面滚动。
+   *
+   * 画布是满屏的固定工作区，页面级滚动没有任何用处；而「顶栏高度 + 画布高度」这种
+   * 两个 vh 相减的算法，在浏览器地址栏收放、页面缩放时会差 1~2px，就冒出一条没意义的页面滚动条。
+   * 这里不去追求算准高度，直接关掉页面滚动——布局仍按 100vh 计算，不会裁剪内容。
+   */
+  useEffect(() => {
+    document.body.classList.toggle("canvas-route", active);
+    return () => document.body.classList.remove("canvas-route");
+  }, [active]);
+
   // iframe 加载完成后（桥会自行发 ready），确保当前分类的数据已下发
   useEffect(() => {
     if (!frameReady || !active) {
