@@ -1533,6 +1533,247 @@
     }
   }
 
+  // ---------- 从连接点拖出去 → 弹窗选节点建立关联 ----------
+
+  /** 节点选择弹窗 id */
+  var PICKER_ID = "bridgeNodePicker";
+
+  /** 拖拽判定：超过这个距离才算「拖出去」（轻点不算） */
+  var SOCKET_DRAG_THRESHOLD = 6;
+
+  /** 关闭节点选择弹窗 */
+  function closeNodePicker() {
+    var box = document.getElementById(PICKER_ID);
+    if (box) {
+      box.style.display = "none";
+      box.innerHTML = "";
+    }
+  }
+
+  /**
+   * 建立一条关联（复用 Weave 的 `_createConnection`，与它自己的建线路径一致）。
+   * @param {string} fromId 起点节点 id
+   * @param {string} toId 终点节点 id
+   * @returns {boolean} 是否新建成功（已存在同样的连线则返回 false）
+   */
+  function connectNodes(fromId, toId) {
+    if (!fromId || !toId || fromId === toId) {
+      return false;
+    }
+    var connections = (App.canvasState && App.canvasState.connections) || [];
+    for (var i = 0; i < connections.length; i += 1) {
+      if (connections[i].from === fromId && connections[i].to === toId) {
+        return false;
+      }
+    }
+    var sourceNode = App._getNodeById ? App._getNodeById(fromId) : null;
+    connections.push(App._createConnection(fromId, toId, { mirrored: !!(sourceNode && sourceNode.mirrored) }));
+    App._connOffsCache = null;
+    App.saveCanvasSnapshot();
+    if (typeof App._refreshFoldBadges === "function") {
+      App._refreshFoldBadges();
+    }
+    if (typeof App.renderLines === "function") {
+      App.renderLines();
+    }
+    log("已建立关联：", fromId, "→", toId);
+    return true;
+  }
+
+  /**
+   * 打开「选择节点」弹窗：从某个连接点拖出去时，用来挑选要连到的节点。
+   *
+   * 为什么需要它：Weave 原本要在拖动中精确落到另一个节点很小的连接点上，
+   * 节点多、画布缩小之后几乎点不准（触屏更明显）。这里改为列出当前画布的所有节点，
+   * 点一下就连上；也支持输入关键字过滤。
+   *
+   * @param {string} sourceId 起始节点 id
+   * @param {"in"|"out"} dir 从哪个连接点拖出的：out = 本节点 → 目标，in = 目标 → 本节点
+   */
+  function openNodePicker(sourceId, dir) {
+    var source = App._getNodeById ? App._getNodeById(sourceId) : null;
+    if (!source) {
+      return;
+    }
+    var nodes = ((App.canvasState && App.canvasState.nodes) || []).filter(function (node) {
+      return node.id !== sourceId;
+    });
+    nodes.sort(function (a, b) {
+      return String(a.label || "").localeCompare(String(b.label || ""), "zh");
+    });
+
+    var box = document.getElementById(PICKER_ID);
+    if (!box) {
+      box = document.createElement("div");
+      box.id = PICKER_ID;
+      box.className = "bridge-modal";
+      box.style.display = "none";
+      document.body.appendChild(box);
+    }
+    var isOut = dir !== "in";
+    var arrow = isOut ? "本节点 → 目标" : "目标 → 本节点";
+    var rows =
+      nodes.length > 0
+        ? nodes
+            .map(function (node) {
+              return (
+                '<button type="button" class="bridge-node-row" data-node-id="' +
+                node.id +
+                '" data-label="' +
+                escapeAttr(node.label || "") +
+                '"><span class="bridge-node-title">' +
+                escapeAttr(node.label || "未命名") +
+                '</span><span class="bridge-node-desc">' +
+                escapeAttr(String(node.desc || "").slice(0, 40)) +
+                "</span></button>"
+              );
+            })
+            .join("")
+        : '<div class="bridge-node-empty">这张画布上只有这一个节点，先建几个节点再连吧</div>';
+
+    box.innerHTML =
+      '<div class="bridge-modal-mask" data-pick="cancel"></div>' +
+      '<div class="bridge-modal-box bridge-picker-box" role="dialog" aria-modal="true">' +
+      '<div class="bridge-modal-head">' +
+      "选择要连接的节点" +
+      '<button type="button" class="bridge-modal-close" data-pick="cancel" aria-label="关闭">×</button>' +
+      "</div>" +
+      '<div class="bridge-modal-body">' +
+      '<p class="bridge-picker-from">从「<strong>' +
+      escapeAttr(source.label || "未命名") +
+      "</strong>」连出　·　方向：" +
+      arrow +
+      "</p>" +
+      (nodes.length > 0
+        ? '<input type="text" class="bridge-palette-text" id="bridgePickerSearch" placeholder="搜索节点标题…" autocomplete="off" />'
+        : "") +
+      '<div class="bridge-node-list">' +
+      rows +
+      "</div>" +
+      "</div>" +
+      '<div class="bridge-modal-foot">' +
+      '<button type="button" class="bridge-palette-btn" data-pick="cancel">取消</button>' +
+      "</div>" +
+      "</div>";
+    box.style.display = "flex";
+
+    var search = document.getElementById("bridgePickerSearch");
+    if (search) {
+      search.focus();
+      search.addEventListener("input", function () {
+        var keyword = search.value.trim().toLowerCase();
+        var list = box.querySelectorAll(".bridge-node-row");
+        for (var i = 0; i < list.length; i += 1) {
+          var label = (list[i].dataset.label || "").toLowerCase();
+          list[i].style.display = !keyword || label.indexOf(keyword) >= 0 ? "" : "none";
+        }
+      });
+      search.addEventListener("keydown", function (event) {
+        event.stopPropagation();
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeNodePicker();
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          // 回车直接连到第一个可见项
+          var visible = box.querySelector('.bridge-node-row:not([style*="display: none"])');
+          if (visible) {
+            visible.click();
+          }
+        }
+      });
+    }
+
+    box.onclick = function (event) {
+      var target = event.target;
+      if (!target || !target.closest) {
+        return;
+      }
+      if (target.closest("[data-pick='cancel']")) {
+        closeNodePicker();
+        return;
+      }
+      var row = target.closest(".bridge-node-row");
+      if (!row) {
+        return;
+      }
+      var targetId = row.dataset.nodeId;
+      var created = isOut ? connectNodes(sourceId, targetId) : connectNodes(targetId, sourceId);
+      closeNodePicker();
+      if (!created) {
+        notify("这条关联已经存在");
+      }
+    };
+    box.onkeydown = function (event) {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeNodePicker();
+      }
+    };
+  }
+
+  /**
+   * 监听连接点上的拖拽：拖动超过阈值就打开节点选择弹窗。
+   *
+   * 为什么不自己画连线：把「拖出去」当成触发手势、把选目标交给弹窗，
+   * 比在拖动中精确命中另一个节点的小圆点可靠（画布缩小或节点多时尤其明显）。
+   * 轻点连接点不触发（仍然走原来的行为），必须是「拖出去」。
+   */
+  function bindSocketDragToPicker() {
+    var stage = document.getElementById("canvasStage");
+    if (!stage || stage.dataset.cwSocketBound === "1") {
+      return;
+    }
+    stage.dataset.cwSocketBound = "1";
+
+    stage.addEventListener(
+      "mousedown",
+      function (event) {
+        if (event.button !== 0 || App.readOnly) {
+          return;
+        }
+        var socket = event.target && event.target.closest ? event.target.closest(".socket") : null;
+        if (!socket) {
+          return;
+        }
+        var nodeId = socket.dataset ? socket.dataset.node : "";
+        if (!nodeId) {
+          return;
+        }
+        var dir = socket.classList.contains("out") ? "out" : "in";
+        var startX = event.clientX;
+        var startY = event.clientY;
+        var fired = false;
+
+        /** 移动超过阈值 → 判定为「从连接点拖出去」 */
+        var onMove = function (moveEvent) {
+          if (fired) {
+            return;
+          }
+          if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) < SOCKET_DRAG_THRESHOLD) {
+            return;
+          }
+          fired = true;
+          cleanup();
+          log("从连接点拖出：", dir, nodeId);
+          openNodePicker(nodeId, dir);
+        };
+
+        /** 收尾：移除临时监听 */
+        var cleanup = function () {
+          document.removeEventListener("mousemove", onMove, true);
+          document.removeEventListener("mouseup", cleanup, true);
+        };
+
+        document.addEventListener("mousemove", onMove, true);
+        document.addEventListener("mouseup", cleanup, true);
+      },
+      true,
+    );
+    log("已启用「从连接点拖出 → 选择节点」");
+  }
+
   // ---------- 导出按钮：悬浮弹出「数据 / 图片」两个选项 ----------
 
   /** 导出菜单元素与隐藏定时器 */
@@ -1963,6 +2204,19 @@
       ".bridge-confirm-node{font-size:12px;color:var(--text-secondary);background:var(--bg-input);",
       "border:1px solid var(--border);border-radius:6px;padding:4px 10px}",
       ".bridge-palette-swatches{display:flex;align-items:center;gap:8px;flex-wrap:wrap}",
+      // 选择节点弹窗：节点列表
+      ".bridge-picker-box{width:min(440px,calc(100vw - 32px))}",
+      ".bridge-picker-from{margin:0;font-size:12.5px;color:var(--text-secondary)}",
+      ".bridge-picker-from strong{color:var(--accent)}",
+      ".bridge-node-list{margin-top:12px;max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:6px}",
+      ".bridge-node-row{display:flex;flex-direction:column;gap:2px;text-align:left;background:var(--bg-input);",
+      "border:1px solid var(--border);border-radius:8px;padding:8px 12px;cursor:pointer;font-family:inherit;",
+      "transition:border-color .15s,background .15s}",
+      ".bridge-node-row:hover{border-color:var(--accent);background:var(--bg-hover)}",
+      ".bridge-node-title{font-size:13px;font-weight:600;color:var(--text-primary)}",
+      ".bridge-node-desc{font-size:11.5px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;",
+      "white-space:nowrap}",
+      ".bridge-node-empty{font-size:12.5px;color:var(--text-faint);padding:10px 0}",
       ".bridge-swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;",
       "transition:transform .15s,border-color .15s}",
       ".bridge-swatch:hover{transform:scale(1.12)}",
@@ -2214,6 +2468,7 @@
     wrapClearAllNodes();
     wrapBoxSelectMode();
     annotateBoxModeButton();
+    bindSocketDragToPicker();
     bindExportMenu();
     bindExportMenuGlobalEvents();
     startNodeColorSync();
