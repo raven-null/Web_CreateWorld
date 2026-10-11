@@ -10334,13 +10334,17 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       // 色点行：横向滚动条与全局同风格（细长），不再单独隐藏
       ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:visible;padding:3px 0}",
       // 胶囊：底色=颜色，说明文字写在里面；文字颜色由 JS 按亮度自适应（默认白字）
-      ".bridge-pill{position:relative;display:inline-flex;align-items:center;flex-shrink:0;border-radius:999px;",
-      "border:2px solid transparent;padding:4px 12px 5px;font-family:inherit;font-size:13px;font-weight:600;",
-      "line-height:1.2;letter-spacing:.2px;cursor:pointer;text-shadow:0 1px 2px rgba(0,0,0,.35);",
+      // 高度固定 + 水平垂直都居中：padding 只留左右（上下不对称会让文字看起来偏），
+      // 行高设为 1 并交给 flex 居中，避免不同字体的基线差异造成偏移
+      ".bridge-pill{position:relative;display:inline-flex;align-items:center;justify-content:center;",
+      "flex-shrink:0;box-sizing:border-box;height:27px;border-radius:999px;",
+      "border:2px solid transparent;padding:0 13px;font-family:inherit;font-size:13px;font-weight:600;",
+      "line-height:1;letter-spacing:.2px;cursor:pointer;text-shadow:0 1px 2px rgba(0,0,0,.35);",
       "transition:box-shadow .15s,transform .15s}",
       // 选中的胶囊整体高亮
       ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.55)}",
-      ".bridge-pill-label{white-space:nowrap;pointer-events:none}",
+      ".bridge-pill-label{display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;",
+      "line-height:1;pointer-events:none}",
       // 拖拽排序：被拖的胶囊半透明 + 虚线框；拖动期间禁用文本选择
       ".bridge-pill.is-dragging{opacity:.65;border-style:dashed;border-color:#e8e0d3}",
       "body.bridge-dragging{cursor:grabbing !important;user-select:none !important}",
