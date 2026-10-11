@@ -4,6 +4,12 @@ export interface Env {
   DB: D1Database;
   /** 图片存储（KV）绑定 */
   IMAGES: KVNamespace;
+  /**
+   * 静态资源绑定（Workers Assets）。
+   * 用途：让 Worker 接管首页请求以便设置缓存头——直接静态直出时 `_headers` 对 HTML 不生效，
+   * 导致每次刷新都要跨境重新验证（实测 0.7~2.7s）。
+   */
+  ASSETS: Fetcher;
   /** better-auth 会话加密密钥 */
   BETTER_AUTH_SECRET: string;
   /** 服务基础地址（本地 http://localhost:8787） */
