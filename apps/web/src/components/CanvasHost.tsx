@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import {
   buildCanvasPayload,
   collectLinkTargets,
@@ -37,6 +37,65 @@ interface BridgeMessage {
   message?: string;
 }
 
+/** 条目写回的最大尝试次数（首次 + 版本冲突重试一次） */
+const SAVE_MAX_ATTEMPTS = 2;
+
+/**
+ * 把条目正文与关联写回数据库，遇到版本冲突（409）时用服务端给的最新版本重试一次。
+ *
+ * 为什么必须重试：画布是多节点批量写回，同一条目可能被两次合并同时处理（或用户在另一处
+ * 编辑过），此时服务端返回 409 + latestVersion。早先的实现把 409 当普通失败丢弃，
+ * 于是日志里刷出一片 409，而画布上的改动其实没保存成功。
+ *
+ * @param entryId 条目 id
+ * @param title 条目标题
+ * @param blocks 内容块（不传表示只改标题与关联）
+ * @param links 关联（必须传全量，服务端按空关联处理会清掉既有边）
+ * @param seed 已知的最新详情（用于首轮 baseVersion）
+ * @returns 写入成功时的版本号；失败返回 null
+ */
+async function saveEntryBlocks(
+  entryId: string,
+  title: string,
+  blocks: Array<{ title: string; contentJson: string; wordCount: number }> | undefined,
+  links: Array<{ toEntryId: string; toTitle: string }>,
+  seed: { version: number; blocks: Array<{ title: string; contentJson: string; wordCount: number }> } | null,
+): Promise<number | null> {
+  let latest = seed;
+  for (let attempt = 0; attempt < SAVE_MAX_ATTEMPTS; attempt += 1) {
+    // 首轮用已知版本；冲突重试前重新拉一次最新版本
+    if (!latest || attempt > 0) {
+      const fresh = await api<EntryDetail>(`/api/entries/${entryId}`).catch(() => null);
+      if (!fresh) {
+        return null;
+      }
+      latest = { version: fresh.version, blocks: fresh.blocks };
+    }
+    try {
+      await api(`/api/entries/${entryId}/blocks`, {
+        method: "PUT",
+        body: {
+          baseVersion: latest.version,
+          title,
+          blocks: blocks ?? latest.blocks,
+          links,
+          createVersion: false,
+          note: "",
+        },
+      });
+      return latest.version + 1;
+    } catch (error) {
+      const conflict = error instanceof ApiError && error.status === 409;
+      if (!conflict) {
+        return null;
+      }
+      // 版本冲突：下一轮用重新拉取到的版本重试
+      latest = null;
+    }
+  }
+  return null;
+}
+
 /**
  * 画布宿主组件。
  * @param props.worldId 当前世界 id（来自路由）
@@ -51,15 +110,21 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
   const bridgeReadyRef = useRef(false);
   const syncingRef = useRef(false);
   const pendingPayloadRef = useRef<WeavePayload | null>(null);
+  /** 与 pendingPayloadRef 配套的分类（桥就绪后补发时要还原上下文） */
+  const pendingCategoryRef = useRef("");
   const syncTimerRef = useRef<number | null>(null);
   /** 已成功写回数据库的标题基线：条目 id → 标题 */
   const baselineTitlesRef = useRef<Map<string, string>>(new Map());
-  /** 当前画布的条目集合与出边（写回时用来判断哪些条目真的要改） */
+  /** 当前画布上已知的条目详情（version + blocks），写回时用最新版本避免 409 */
   const detailCacheRef = useRef<Map<string, EntryDetail>>(new Map());
   /** 上次写回时的出边基线：条目 id → 目标条目 id 集合（用于判断连线是否真的变了） */
   const edgeSetsRef = useRef<Map<string, Set<string>>>(new Map());
   /** 正在加载的世界与分类（防止重复请求） */
   const loadingKeyRef = useRef("");
+  /** 当前画布内容对应的分类：写回缓存时用它，避免分类切换期间张冠李戴 */
+  const payloadCategoryRef = useRef("");
+  /** 同步串行化：同一时刻只跑一个合并，避免对同一条目并发写导致 409 */
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
   /** 组件卸载标记：避免异步回写 setState */
   const aliveRef = useRef(true);
 
@@ -71,10 +136,13 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
   }, []);
 
   /** 把画布数据发给 iframe（桥未就绪时先存起来，收到 ready 再发） */
-  const pushToCanvas = useCallback((payload: WeavePayload) => {
+  const pushToCanvas = useCallback((payload: WeavePayload, categoryId: string) => {
+    // 记录这批内容属于哪个分类：合并写回时用它写缓存，避免分类切换期间张冠李戴
+    payloadCategoryRef.current = categoryId;
     const frame = frameRef.current;
     if (!frame || !bridgeReadyRef.current) {
       pendingPayloadRef.current = payload;
+      pendingCategoryRef.current = categoryId;
       return;
     }
     frame.contentWindow?.postMessage({ type: "weave:data", payload }, window.location.origin);
@@ -184,34 +252,32 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
             toTitle: titleOf.get(targetId) ?? "",
           }));
 
-          try {
-            await api(`/api/entries/${realId}/blocks`, {
-              method: "PUT",
-              body: {
-                baseVersion: detail ? detail.version : 1,
-                title: node.label || "未命名条目",
-                blocks,
-                // 关键：必须传全量 links，服务端把「未传」当空关联会清掉既有边
-                links,
-                createVersion: false,
-                note: "",
-              },
-            });
-            // 写回成功后才更新缓存：否则下次会用过期 version 触发 409
-            detailCacheRef.current.set(node.id, {
-              id: realId,
-              title: node.label,
-              version: (detail?.version ?? 1) + 1,
-              blocks,
-            });
-          } catch (err) {
-            canvasInternals.setState({ phase: "error", message: `更新条目失败：${(err as Error).message}` });
+          // 写回（内部处理 409：用服务端最新版本重试一次）
+          const newVersion = await saveEntryBlocks(
+            realId,
+            node.label || "未命名条目",
+            blocks,
+            links,
+            detail ? { version: detail.version, blocks: detail.blocks } : null,
+          );
+          if (newVersion === null) {
+            canvasInternals.setState({ phase: "error", message: `保存条目失败（版本冲突重试后仍未成功）` });
+            continue;
           }
+          // 写回成功后才更新缓存：否则下次会用过期 version 触发 409
+          detailCacheRef.current.set(node.id, {
+            id: realId,
+            title: node.label,
+            version: newVersion,
+            blocks,
+          });
         }
 
         // 4) 缓存坐标与快照，便于下次秒开
-        writeLayout(world.id, categoryId, payload);
-        writeSnapshot(world.id, categoryId, payload);
+        // 用「当前画布内容所属的分类」而不是本次调用的参数：分类切换期间两者可能不同
+        const payloadCategory = payloadCategoryRef.current || categoryId;
+        writeLayout(world.id, payloadCategory, payload);
+        writeSnapshot(world.id, payloadCategory, payload);
         rememberBaseline(payload);
         edgeSetsRef.current = outgoingByNode(payload);
         canvasInternals.setState({ phase: "ready", message: "已保存" });
@@ -229,7 +295,14 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     [rememberBaseline],
   );
 
-  /** 防抖安排一次同步 */
+  /**
+   * 防抖安排一次同步，并串行执行。
+   * 串行的意义：同一批条目的两次合并若并发跑，会用同一个旧 version 各写一次，
+   * 服务端对第二个返回 409（此前日志里成片 409 就是这个原因）。
+   * @param payload 画布存档
+   * @param world 世界信息
+   * @param categoryId 画布所属分类
+   */
   const scheduleSync = useCallback(
     (payload: WeavePayload, world: WorldInfo, categoryId: string) => {
       if (syncTimerRef.current !== null) {
@@ -237,7 +310,7 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
       }
       syncTimerRef.current = window.setTimeout(() => {
         syncTimerRef.current = null;
-        void mergeChanges(payload, world, categoryId);
+        queueRef.current = queueRef.current.then(() => mergeChanges(payload, world, categoryId)).catch(() => undefined);
       }, SYNC_DEBOUNCE_MS);
     },
     [mergeChanges],
@@ -263,8 +336,10 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
       // 1) 先用本地快照立刻上屏（切分类、切页面回来时几乎无感）
       const cached = force ? null : readSnapshot(targetWorldId, categoryId);
       if (cached) {
-        pushToCanvas(cached);
+        pushToCanvas(cached, categoryId);
         rememberBaseline(cached);
+        // 缓存上屏后要重置同步基线：缓存里的内容与画布当前内容一致，避免被当成「新改动」回写
+        edgeSetsRef.current = outgoingByNode(cached);
         canvasInternals.setState({
           worldId: targetWorldId,
           categoryId,
@@ -292,8 +367,8 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         if (!aliveRef.current) {
           return;
         }
+        // 只在「当前分类仍是这个」时注入：否则用户在等待期间切走了，注入会把画布内容覆盖回去
         if (canvasInternals.getState().categoryId !== categoryId) {
-          // 用户已经切到别的分类，这批数据作废
           return;
         }
 
@@ -310,7 +385,7 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         detailCacheRef.current = new Map();
         edgeSetsRef.current = outgoingByNode(payload);
 
-        pushToCanvas(payload);
+        pushToCanvas(payload, categoryId);
         rememberBaseline(payload);
         writeSnapshot(targetWorldId, categoryId, payload);
         canvasInternals.setState({
@@ -377,9 +452,11 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
       if (data.type === "weave:ready") {
         bridgeReadyRef.current = true;
         const pending = pendingPayloadRef.current;
+        const pendingCategory = pendingCategoryRef.current;
         pendingPayloadRef.current = null;
+        pendingCategoryRef.current = "";
         if (pending) {
-          pushToCanvas(pending);
+          pushToCanvas(pending, pendingCategory);
         } else {
           const current = canvasInternals.getState();
           if (current.worldId && current.categoryId) {
