@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { colorOfCategory } from "../lib/weave-data";
 import { dispatchCanvas, useCanvasState } from "../lib/weave-store";
 
 /** 世界信息（只为取分类列表） */
@@ -91,7 +92,10 @@ export default function WorldCanvasPage() {
               type="button"
               className={`canvas-tab${category.id === activeCategoryId ? " is-active" : ""}`}
               onClick={() => switchCategory(category.id)}
+              title={`${category.name}（画布上的${category.name}节点用这个颜色）`}
             >
+              {/* 颜色点与画布上的节点颜色一致，方便一眼对应「什么颜色=什么定位」 */}
+              <span className="canvas-tab-dot" style={{ background: colorOfCategory(category.name) }} />
               {category.name}
             </button>
           ))}

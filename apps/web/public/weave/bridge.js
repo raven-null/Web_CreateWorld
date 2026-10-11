@@ -272,6 +272,149 @@
     true,
   );
 
+  /**
+   * 把节点的颜色写到 dataset，供 CSS 属性选择器识别（红色等自定义色没有预设 class）；
+   * 只在颜色变化时写，避免每帧触发样式重算。
+   */
+  function syncNodeColorAttrs() {
+    var map = App._nodeElMap;
+    if (!map || typeof map.forEach !== "function") {
+      return;
+    }
+    map.forEach(function (el, id) {
+      var node = App._getNodeById ? App._getNodeById(id) : null;
+      if (!node) {
+        return;
+      }
+      var color = node.color || "";
+      if (el.dataset.cwColor !== color) {
+        el.dataset.cwColor = color;
+      }
+    });
+  }
+
+  /** 启动节点配色同步：每秒检查一次（节点数量与颜色变化都不频繁，开销可忽略） */
+  function startNodeColorSync() {
+    syncNodeColorAttrs();
+    window.setInterval(syncNodeColorAttrs, 1000);
+  }
+
+  /**
+   * 颜色 → 分类名。
+   * 「人物=红、地点=黄」按用户指定；其余按语义补足，保证五色各有唯一分类。
+   * 值的写法必须与画布数据一致：预设色用色名，红色是自选十六进制。
+   */
+  var COLOR_CATEGORY = {
+    red: "人物",
+    yellow: "地点",
+    orange: "势力",
+    cyan: "物品",
+    green: "事件",
+  };
+
+  /** 自选色的十六进制取值（Weave 预设里没有红色，用自定义色实现） */
+  var CUSTOM_COLOR_HEX = "#d9534f";
+
+  /** 加深一档的红色（节点头部渐变用） */
+  var CUSTOM_COLOR_DARK = "#c9403c";
+
+  // ---------- 顶栏品牌区：隐藏（平台内不再需要它，也避免误触彩蛋） ----------
+
+  /** 隐藏 Weave 顶栏的品牌区（它带一个点击彩蛋，平台内不需要） */
+  function hideBrand() {
+    var brand = document.getElementById("brandSigma");
+    if (brand) {
+      brand.style.display = "none";
+    }
+  }
+
+  /**
+   * 顶栏布局调整：品牌区收起后，把按钮组靠左，避免左侧留出一大块空白。
+   * 用 body 上的标记类控制，不直接改元素内联样式（Weave 重渲染也不受影响）。
+   */
+  function initHeaderLayout() {
+    document.body.classList.add("cw-hide-brand");
+  }
+
+  // ---------- 颜色 ↔ 分类：在调色板圆点上标出每个颜色代表什么 ----------
+
+  /** 圆点容器的选择器（内置调色板与详情弹窗共用同一套圆点 class） */
+  var DOT_CONTAINER_SELECTORS = ["#gColorDots", "#mColors"];
+
+  /**
+   * 给一个调色板圆点写入分类名称。
+   * @param {HTMLElement} dot 圆点按钮（data-c 为颜色）
+   */
+  function labelDot(dot) {
+    var color = dot.dataset ? dot.dataset.c : "";
+    var category = COLOR_CATEGORY[color];
+    if (!category) {
+      return;
+    }
+    // 用 CSS 伪元素显示，不动圆点自身内容与事件
+    dot.setAttribute("data-cw-label", category);
+    dot.title = category + "（" + color + "）";
+  }
+
+  /** 给页面上所有调色板圆点补上分类名称 */
+  function applyColorLabels() {
+    for (var i = 0; i < DOT_CONTAINER_SELECTORS.length; i += 1) {
+      var container = document.querySelector(DOT_CONTAINER_SELECTORS[i]);
+      if (!container) {
+        continue;
+      }
+      var dots = container.querySelectorAll("[data-c]");
+      for (var j = 0; j < dots.length; j += 1) {
+        labelDot(dots[j]);
+      }
+    }
+  }
+
+  /**
+   * 启动颜色标注：先标一次，并监听容器变化。
+   * Weave 每次打开颜色面板都会重建圆点，因此用 MutationObserver 在重建后补标。
+   */
+  function startColorLabels() {
+    applyColorLabels();
+    for (var i = 0; i < DOT_CONTAINER_SELECTORS.length; i += 1) {
+      var container = document.querySelector(DOT_CONTAINER_SELECTORS[i]);
+      if (!container) {
+        continue;
+      }
+      var observer = new MutationObserver(applyColorLabels);
+      observer.observe(container, { childList: true });
+    }
+  }
+
+  /**
+   * 颜色调色板的额外样式：圆点下方显示分类名，并调整间距容纳文字。
+   * 圆点保持原样，只是多一行标签——用户一眼能看出「什么颜色=什么定位」。
+   */
+  function injectColorLabelStyle() {
+    var style = document.createElement("style");
+    style.id = "bridgeColorLabelStyle";
+    var red = CUSTOM_COLOR_HEX;
+    var redDark = CUSTOM_COLOR_DARK;
+    style.textContent = [
+      // 面板加宽并让圆点排布留出标签空间
+      "#genColorPanel .g-dot-wrap{gap:10px 8px !important;max-width:290px;margin-bottom:16px}",
+      "#genColorPanel .g-dot{width:26px;height:26px}",
+      // 标签：绝对定位在圆点下方，不改变圆点尺寸与点击区域
+      "[data-cw-label]{position:relative}",
+      "[data-cw-label]::after{content:attr(data-cw-label);position:absolute;left:50%;top:100%;",
+      "transform:translateX(-50%);margin-top:4px;font-size:10px;line-height:1;color:var(--text-secondary);",
+      "white-space:nowrap;pointer-events:none}",
+      // 自定义色（红色）也要能被认出：预设色有 h-<色名> class，红色没有
+      '.node[data-cw-color="' + red + '"] .node-header{background:linear-gradient(135deg,' + red + "," + redDark + ");",
+      "text-shadow:0 1px 3px rgba(0,0,0,.35)}",
+      '.node[data-cw-color="' + red + '"] .node-body{border-color:' + red + "}",
+      '.node[data-cw-color="' + red + '"] .socket{border-color:' + red + "}",
+      '.node[data-cw-color="' + red + '"] .socket-inner{background:' + red + "}",
+      '.node[data-cw-color="' + red + '"] .socket{color:' + red + "}",
+    ].join("");
+    document.head.appendChild(style);
+  }
+
   // ---------- 侧边栏：网格背景开关（挂到 Weave 侧边栏，Weave 本体不改） ----------
 
   /** 网格显示偏好的 localStorage 键（Weave 自带键都是 flow_*，另开一个避免混淆） */
@@ -402,6 +545,10 @@
       ".node{background:var(--bg-card);border-color:var(--border);box-shadow:0 6px 20px rgba(0,0,0,.35);}",
       ".node:hover{box-shadow:0 8px 26px rgba(0,0,0,.45);}",
       ".socket{background:var(--bg-card);}",
+      // 顶栏：品牌区收起后按钮组靠左，避免左侧留出大片空白
+      "body.cw-hide-brand .header-brand{display:none}",
+      "body.cw-hide-brand .header{justify-content:flex-start}",
+      "body.cw-hide-brand .header .btn-group{margin-left:0}",
     ].join("");
     document.head.appendChild(style);
   }
@@ -465,9 +612,14 @@
     }
   }
 
-  /** 启动：挂 UI、侧边栏开关、通知父页面可以下发数据，并加上载入超时保护 */
+  /** 启动：挂 UI、品牌区隐藏、颜色标注与自定义色样式、侧边栏开关，然后通知父页面下发数据 */
   function boot() {
     mountUi();
+    hideBrand();
+    initHeaderLayout();
+    startNodeColorSync();
+    injectColorLabelStyle();
+    startColorLabels();
     startGridToggle();
     log("桥已启动，等待父页面下发数据");
     loadingTimer = setTimeout(function () {

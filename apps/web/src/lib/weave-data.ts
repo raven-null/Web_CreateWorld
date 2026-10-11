@@ -33,14 +33,23 @@ export interface EntryDetail {
   blocks: Array<{ title: string; contentJson: string; wordCount: number }>;
 }
 
-/** 分类 → Weave 预设色 */
+/**
+ * 分类 → 画布节点颜色。
+ *
+ * ⚠️ 必须与 `apps/web/public/weave/bridge.js` 里的 `COLOR_CATEGORY` 保持一致：
+ * 那份映射决定「调色板圆点上标着什么分类名」，这份决定「节点实际画成什么颜色」。
+ * 红色是自定义十六进制——Weave 预设色里没有红色，而人物用红更符合直觉。
+ */
 const CATEGORY_COLOR: Record<string, string> = {
-  人物: "blue",
-  地点: "green",
+  人物: "#d9534f",
+  地点: "yellow",
   势力: "orange",
-  物品: "yellow",
-  事件: "cyan",
+  物品: "cyan",
+  事件: "green",
 };
+
+/** 分类名不在映射表中时的兜底颜色（与桥里的红色一致，避免出现无名颜色） */
+const FALLBACK_COLOR = "#d9534f";
 
 /** 节点尺寸（Weave 存档单位是「格」，1 格 = 20 像素） */
 const NODE_SIZE = { w: 9, h: 4 };
@@ -49,12 +58,12 @@ const NODE_SIZE = { w: 9, h: 4 };
 const SUMMARY_LIMIT = 96;
 
 /**
- * 取分类对应的 Weave 预设色。
+ * 取分类对应的画布颜色。
  * @param categoryName 分类名
- * @returns 预设色名（未知分类回落为 blue）
+ * @returns 颜色（预设色名或十六进制；未知分类回落为兜底色）
  */
 export function colorOfCategory(categoryName: string): string {
-  return CATEGORY_COLOR[categoryName] ?? "blue";
+  return CATEGORY_COLOR[categoryName] ?? FALLBACK_COLOR;
 }
 
 /**

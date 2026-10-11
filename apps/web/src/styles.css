@@ -1518,6 +1518,9 @@ mark {
 }
 
 .canvas-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-dim);
@@ -1528,6 +1531,15 @@ mark {
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+/* 分类色点：与画布上该分类节点的颜色一致，方便一眼对应 */
+.canvas-tab-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
 .canvas-tab:hover {
