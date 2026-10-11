@@ -9155,30 +9155,59 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   }
 
   /**
-   * 用 Weave 自己的色点面板把颜色平铺成一排，并给每个色点标出它代表的分类。
-   * 复用 _buildDotPanel 的意义：选色后的状态同步（节点默认色、localStorage 偏好、
-   * 详情弹窗里的圆点高亮）全部由 Weave 自己完成，桥不需要复制那套逻辑。
+   * 在顶栏平铺一排色点：每个色点代表一个分类。
+   *
+   * 这里**不调用 Weave 的 _buildDotPanel**——它生成的类名是「前缀 + '-dot'」，
+   * 且内部只有 5 个预设色（没有红色），配色顺序也不适合顶栏。改为自己生成：
+   * 类名 `.bridge-dot` 与注入的样式完全对应，颜色与分类的对应关系一目了然，
+   * 点击后仍调用 Weave 的 `_setGenColor`，选色状态与偏好存储照旧由 Weave 维护。
    */
   function buildColorDots() {
     var container = document.getElementById(COLOR_DOTS_ID);
-    if (!container || typeof App._buildDotPanel !== "function") {
+    if (!container) {
       return;
     }
-    App._buildDotPanel(COLOR_DOTS_ID, "bridge-", App._selectedGenColor, function (btn) {
-      var next = btn.dataset.c;
-      App._setGenColor(next);
-      updateCurrentColor(next);
-    });
 
-    // 色点下方显示分类名（红色是自定义色，同样要标出）
-    var dots = container.querySelectorAll("[data-c]");
-    for (var i = 0; i < dots.length; i += 1) {
-      var color = dots[i].dataset.c;
-      var category = color === CUSTOM_COLOR_HEX ? COLOR_CATEGORY.red : COLOR_CATEGORY[color];
-      if (category) {
-        dots[i].setAttribute("data-cw-label", category);
-        dots[i].title = category + "（" + (color === CUSTOM_COLOR_HEX ? "红" : color) + "）";
+    /** 色点定义：顺序 = 分类顺序（人物 / 地点 / 势力 / 物品 / 事件） */
+    var DOT_DEFS = [
+      { color: CUSTOM_COLOR_HEX, hex: CUSTOM_COLOR_HEX, label: COLOR_CATEGORY.red },
+      { color: "yellow", hex: "#eab308", label: COLOR_CATEGORY.yellow },
+      { color: "orange", hex: "#f97316", label: COLOR_CATEGORY.orange },
+      { color: "cyan", hex: "#06b6d4", label: COLOR_CATEGORY.cyan },
+      { color: "green", hex: "#10b981", label: COLOR_CATEGORY.green },
+    ];
+
+    container.innerHTML = "";
+    for (var i = 0; i < DOT_DEFS.length; i += 1) {
+      var def = DOT_DEFS[i];
+      var dot = document.createElement("button");
+      dot.type = "button";
+      dot.className = "bridge-dot";
+      dot.dataset.c = def.color;
+      dot.dataset.cwLabel = def.label;
+      dot.style.background = def.hex;
+      dot.title = def.label + "（" + def.color + "）";
+      dot.setAttribute("aria-label", def.label);
+      if (def.color === App._selectedGenColor) {
+        dot.classList.add("active");
       }
+      container.appendChild(dot);
+    }
+
+    // 用户自选过的颜色（Weave 最多保留 4 个）
+    var custom = Array.isArray(App._customColors) ? App._customColors : [];
+    for (var j = 0; j < custom.length; j += 1) {
+      var hex = custom[j];
+      if (hex === CUSTOM_COLOR_HEX) {
+        continue;
+      }
+      var customDot = document.createElement("button");
+      customDot.type = "button";
+      customDot.className = "bridge-dot";
+      customDot.dataset.c = hex;
+      customDot.style.background = hex;
+      customDot.title = "自选色 " + hex;
+      container.appendChild(customDot);
     }
 
     // 自选色入口
@@ -9192,11 +9221,28 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       '<line x1="5" y1="12" x2="19" y2="12"></line></svg>';
     wheel.addEventListener("click", function () {
       App._gOpenCustomPicker();
+      // 选定后重建色点行（自选色会出现在里面）
       window.setTimeout(function () {
-        updateCurrentColor(App._selectedGenColor);
-      }, 400);
+        buildColorDots();
+      }, 500);
     });
     container.appendChild(wheel);
+
+    // 统一用事件委托接点击：色点是动态重建的，逐个绑定容易漏
+    container.onclick = function (event) {
+      var target = event.target;
+      var button = target && target.closest ? target.closest(".bridge-dot") : null;
+      if (!button) {
+        return;
+      }
+      var next = button.dataset.c;
+      App._setGenColor(next);
+      var all = container.querySelectorAll(".bridge-dot");
+      for (var k = 0; k < all.length; k += 1) {
+        all[k].classList.toggle("active", all[k] === button);
+      }
+      updateCurrentColor(next);
+    };
 
     updateCurrentColor(App._selectedGenColor);
   }
@@ -9311,12 +9357,15 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       "white-space:nowrap;flex-shrink:0}",
       ".bridge-current-dot{width:10px;height:10px;border-radius:50%;display:inline-block;",
       "box-shadow:0 0 0 1px rgba(255,255,255,.18)}",
-      ".bridge-color-dots{display:flex;align-items:center;gap:12px;padding-bottom:11px}",
+      // 色点行：圆点小一档，下方留出标签的位置（padding-bottom 让整行在 56px 顶栏里垂直居中）
+      ".bridge-color-dots{display:flex;align-items:center;gap:14px;padding-bottom:12px}",
       ".bridge-color-dots .bridge-dot{width:18px;height:18px;border-radius:50%;border:2px solid transparent;",
-      "cursor:pointer;padding:0;transition:transform .15s,box-shadow .15s;position:relative;flex-shrink:0}",
+      "cursor:pointer;padding:0;position:relative;flex-shrink:0;transition:transform .15s,box-shadow .15s}",
       ".bridge-color-dots .bridge-dot:hover{transform:scale(1.18)}",
-      ".bridge-color-dots .bridge-dot.active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.35)}",
-      ".bridge-color-dots [data-cw-label]::after{font-size:9.5px;margin-top:3px;color:var(--text-faint)}",
+      ".bridge-color-dots .bridge-dot.active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.45)}",
+      ".bridge-color-dots .bridge-dot[data-cw-label]::after{content:attr(data-cw-label);position:absolute;",
+      "left:50%;top:100%;transform:translateX(-50%);margin-top:4px;font-size:9.5px;line-height:1;",
+      "color:var(--text-faint);white-space:nowrap;pointer-events:none}",
       ".bridge-wheel{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;",
       "justify-content:center;cursor:pointer;background:var(--bg-input);border:1px solid var(--border);",
       "color:var(--text-secondary);padding:0;flex-shrink:0}",
