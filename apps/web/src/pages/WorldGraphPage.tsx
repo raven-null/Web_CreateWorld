@@ -6,6 +6,8 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
@@ -43,6 +45,36 @@ interface SimLink extends SimulationLinkDatum<SimNode> {
 const PALETTE = ["#c9a15c", "#6fa06f", "#6a8fbf", "#b06a8f", "#8f7fbf", "#bf8f6a", "#5fa8a0", "#a8a05f"];
 
 /**
+ * 力导向布局参数。
+ * 设计取舍：早先斥力 −220、连边 90px 会让节点互相推出画布（节点半径才 8~20px），
+ * 观感「各奔东西」。这里统一收紧：斥力变小、连边变短、撞击半径略放宽，
+ * 并用弱向心力把整张图兜在中心附近，避免出现长尾飘散。
+ */
+const LAYOUT = {
+  /** 相连节点的目标距离（像素，世界坐标） */
+  linkDistance: 52,
+  /** 连线刚度：越大越不容易被斥力拉开 */
+  linkStrength: 0.9,
+  /** 多体斥力：负值越大越散 */
+  chargeStrength: -110,
+  /** 向心力的强度：把远离中心的节点往回拉 */
+  centerStrength: 0.06,
+  /** 撞击半径附加量：保证节点与标题之间留出空隙 */
+  collidePadding: 10,
+  /** 自动适配时四周留白 */
+  fitPadding: 56,
+  /** 画布尺寸充裕时的最大放大倍数（避免小图被吹得过大） */
+  maxZoom: 1.35,
+} as const;
+
+/** 视图变换：世界坐标 → 屏幕坐标（x' = x * scale + offsetX） */
+interface ViewTransform {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+/**
  * 节点绘制半径：关联越多节点越大，封顶避免遮挡。
  * @param degree 关联度
  * @returns 半径（像素）
@@ -60,6 +92,88 @@ function truncateTitle(title: string): string {
   return title.length > 10 ? `${title.slice(0, 10)}…` : title;
 }
 
+/** 节点边界框（世界坐标，含节点半径） */
+interface NodeBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/**
+ * 计算所有节点的边界框。
+ * @param nodes 当前可见节点
+ * @param radiusOf 取节点半径的函数（用于把圆和标题一起框进来）
+ * @returns 边界框；没有节点时返回 null
+ */
+function computeBounds(nodes: SimNode[], radiusOf: (node: SimNode) => number): NodeBounds | null {
+  if (nodes.length === 0) {
+    return null;
+  }
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const node of nodes) {
+    const radius = radiusOf(node);
+    const x = node.x ?? 0;
+    const y = node.y ?? 0;
+    minX = Math.min(minX, x - radius);
+    maxX = Math.max(maxX, x + radius);
+    // 标题画在节点下方约 14px 处，纵向多留一点
+    minY = Math.min(minY, y - radius);
+    maxY = Math.max(maxY, y + radius + 18);
+  }
+  return { minX, maxX, minY, maxY };
+}
+
+/**
+ * 根据边界框算出「让整张图恰好铺满画布」的视图变换。
+ * 这是解决节点散得太开、甚至跑出画布的关键：无论布局铺多大，都会自动缩放到可见范围。
+ * @param bounds 节点边界框
+ * @param width 画布宽度（CSS 像素）
+ * @param height 画布高度（CSS 像素）
+ * @returns 视图变换；尺寸异常时返回 null
+ */
+function fitView(bounds: NodeBounds | null, width: number, height: number): ViewTransform | null {
+  if (!bounds || width <= 0 || height <= 0) {
+    return null;
+  }
+  const spanX = Math.max(bounds.maxX - bounds.minX, 1);
+  const spanY = Math.max(bounds.maxY - bounds.minY, 1);
+  const usableWidth = Math.max(width - LAYOUT.fitPadding * 2, 80);
+  const usableHeight = Math.max(height - LAYOUT.fitPadding * 2, 80);
+  const scale = Math.min(LAYOUT.maxZoom, Math.max(0.05, Math.min(usableWidth / spanX, usableHeight / spanY)));
+  const offsetX = width / 2 - ((bounds.minX + bounds.maxX) / 2) * scale;
+  const offsetY = height / 2 - ((bounds.minY + bounds.maxY) / 2) * scale;
+  return { scale, offsetX, offsetY };
+}
+
+/**
+ * 视图平滑过渡：避免布局还在收敛时画面不停跳动。
+ * @param current 当前视图（可能还没初始化）
+ * @param target 目标视图
+ * @param ease 缓动系数，0~1
+ * @returns 过渡后的视图
+ */
+function easeView(current: ViewTransform | null, target: ViewTransform, ease: number): ViewTransform {
+  if (!current) {
+    return target;
+  }
+  const diff =
+    Math.abs(current.scale - target.scale) +
+    Math.abs(current.offsetX - target.offsetX) +
+    Math.abs(current.offsetY - target.offsetY);
+  if (diff < 0.6) {
+    return target;
+  }
+  return {
+    scale: current.scale + (target.scale - current.scale) * ease,
+    offsetX: current.offsetX + (target.offsetX - current.offsetX) * ease,
+    offsetY: current.offsetY + (target.offsetY - current.offsetY) * ease,
+  };
+}
+
 /**
  * 世界关系图页：力导向布局，支持拖拽节点、悬停高亮、点击进入条目。
  */
@@ -71,6 +185,8 @@ export default function WorldGraphPage() {
   const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
   const simNodesRef = useRef<SimNode[]>([]);
   const hoverIdRef = useRef<string | null>(null);
+  /** 当前视图变换（世界坐标 → 屏幕坐标），由每帧自动适配更新 */
+  const viewRef = useRef<ViewTransform | null>(null);
   const dragRef = useRef<{ node: SimNode | null; moved: boolean; startX: number; startY: number }>({
     node: null,
     moved: false,
@@ -140,12 +256,18 @@ export default function WorldGraphPage() {
         "link",
         forceLink<SimNode, SimLink>(visibleLinks)
           .id((node) => node.id)
-          .distance(90)
-          .strength(0.7),
+          .distance(LAYOUT.linkDistance)
+          .strength(LAYOUT.linkStrength),
       )
-      .force("charge", forceManyBody().strength(-220))
+      .force("charge", forceManyBody().strength(LAYOUT.chargeStrength))
       .force("center", forceCenter(0, 0))
-      .force("collide", forceCollide<SimNode>().radius((node) => nodeRadius(node.degree) + 6));
+      // 向心力：与 forceCenter 只做整体平移不同，它会把离群的节点逐个拉回中心
+      .force("pullX", forceX<SimNode>(0).strength(LAYOUT.centerStrength))
+      .force("pullY", forceY<SimNode>(0).strength(LAYOUT.centerStrength))
+      .force(
+        "collide",
+        forceCollide<SimNode>().radius((node) => nodeRadius(node.degree) + LAYOUT.collidePadding),
+      );
     simRef.current = simulation;
     simNodesRef.current = visibleNodes;
 
@@ -163,9 +285,21 @@ export default function WorldGraphPage() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, width, height);
 
-      const centerX = width / 2;
-      const centerY = height / 2;
       const hoverId = hoverIdRef.current;
+
+      // 视图自动适配：每帧按节点实际范围算缩放与偏移，平滑跟随，保证整张图始终在画布内
+      const bounds = computeBounds(visibleNodes, (node) => nodeRadius(node.degree));
+      const targetView = fitView(bounds, width, height);
+      if (targetView) {
+        viewRef.current = easeView(viewRef.current, targetView, dragRef.current.node ? 0.3 : 0.12);
+      }
+      const view = viewRef.current ?? { scale: 1, offsetX: width / 2, offsetY: height / 2 };
+      // 缩放补偿后的字号：放大时字不跟着变大，保持一致的阅读感受
+      const fontScale = Math.min(Math.max(1 / view.scale, 0.8), 1.6);
+
+      /** 世界坐标 → 屏幕坐标 */
+      const screenX = (x: number): number => x * view.scale + view.offsetX;
+      const screenY = (y: number): number => y * view.scale + view.offsetY;
 
       // 连线：悬停节点相连的边高亮
       for (const link of visibleLinks) {
@@ -176,20 +310,19 @@ export default function WorldGraphPage() {
         }
         const active = hoverId !== null && (source.id === hoverId || target.id === hoverId);
         ctx.strokeStyle = active ? "rgba(201, 161, 92, 0.9)" : "rgba(180, 165, 135, 0.22)";
-        ctx.lineWidth = active ? 1.6 : 1;
+        ctx.lineWidth = (active ? 1.6 : 1) * view.scale;
         ctx.beginPath();
-        ctx.moveTo(centerX + (source.x ?? 0), centerY + (source.y ?? 0));
-        ctx.lineTo(centerX + (target.x ?? 0), centerY + (target.y ?? 0));
+        ctx.moveTo(screenX(source.x ?? 0), screenY(source.y ?? 0));
+        ctx.lineTo(screenX(target.x ?? 0), screenY(target.y ?? 0));
         ctx.stroke();
       }
 
       // 节点与标题
-      ctx.font = "11px sans-serif";
       ctx.textAlign = "center";
       for (const node of visibleNodes) {
-        const x = centerX + (node.x ?? 0);
-        const y = centerY + (node.y ?? 0);
-        const radius = nodeRadius(node.degree);
+        const x = screenX(node.x ?? 0);
+        const y = screenY(node.y ?? 0);
+        const radius = Math.max(nodeRadius(node.degree) * view.scale, 3);
         const active = node.id === hoverId;
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
@@ -202,8 +335,9 @@ export default function WorldGraphPage() {
           ctx.lineWidth = 2;
           ctx.stroke();
         }
+        ctx.font = `${11 * fontScale}px sans-serif`;
         ctx.fillStyle = active ? "#e8e0d3" : "#a89c88";
-        ctx.fillText(truncateTitle(node.title), x, y + radius + 14);
+        ctx.fillText(truncateTitle(node.title), x, y + radius + 13 * fontScale);
       }
 
       rafId = requestAnimationFrame(draw);
@@ -223,19 +357,18 @@ export default function WorldGraphPage() {
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
-  /** 命中测试：找出指针附近的节点 */
+  /** 命中测试：把屏幕坐标换算回世界坐标后，找出指针附近的节点 */
   const findNodeAt = (x: number, y: number): SimNode | null => {
     const canvas = canvasRef.current;
     if (!canvas) {
       return null;
     }
-    const centerX = canvas.clientWidth / 2;
-    const centerY = canvas.clientHeight / 2;
+    const view = viewRef.current ?? { scale: 1, offsetX: canvas.clientWidth / 2, offsetY: canvas.clientHeight / 2 };
     let found: SimNode | null = null;
     let bestDistanceSq = 18 * 18;
     for (const node of simNodesRef.current) {
-      const dx = centerX + (node.x ?? 0) - x;
-      const dy = centerY + (node.y ?? 0) - y;
+      const dx = (node.x ?? 0) * view.scale + view.offsetX - x;
+      const dy = (node.y ?? 0) * view.scale + view.offsetY - y;
       const distanceSq = dx * dx + dy * dy;
       if (distanceSq < bestDistanceSq) {
         bestDistanceSq = distanceSq;
@@ -267,8 +400,13 @@ export default function WorldGraphPage() {
       if (Math.abs(point.x - drag.startX) + Math.abs(point.y - drag.startY) > 4) {
         drag.moved = true;
       }
-      drag.node.fx = point.x - canvas.clientWidth / 2;
-      drag.node.fy = point.y - canvas.clientHeight / 2;
+      // 屏幕坐标换算为世界坐标：拖拽手感不受自动缩放影响
+      const view = viewRef.current;
+      const scale = view?.scale ?? 1;
+      const offsetX = view?.offsetX ?? canvas.clientWidth / 2;
+      const offsetY = view?.offsetY ?? canvas.clientHeight / 2;
+      drag.node.fx = (point.x - offsetX) / scale;
+      drag.node.fy = (point.y - offsetY) / scale;
       return;
     }
 

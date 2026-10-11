@@ -1,0 +1,321 @@
+/**
+ * Weave ↔ 世界观平台 的同步桥（由 canvas 页面以 iframe 方式加载 Weave 时注入）。
+ *
+ * 为什么不改 Weave 本体：Weave 的工程规范要求「始终保持为单 HTML 文件、13 个模块按固定
+ * 顺序拼接」，直接改它的内联脚本会破坏它的结构守护。因此这里做**外层桥**，只在 HTML 末尾
+ * 追加一行 <script src="./bridge.js"></script>，其余文件原样保持。
+ *
+ * 桥的三件事：
+ *   1. 数据接管：`flow_data` 这个 localStorage 键改为走内存 + postMessage，画布内容由父页面
+ *      （React 页面）从数据库加载后注入，不再依赖浏览器本地存储；
+ *   2. 变更上报：Weave 每次 saveCanvas 都把整份存档发给父页面，由父页面做差异合并写回数据库；
+ *   3. 节点详情浮层：点击节点后展示条目标题与摘要，并提供「打开条目」入口。
+ *
+ * 消息协议（父页面 → 桥）：
+ *   { type: "weave:data", payload }      注入画布数据（首次加载与外部改动后刷新都用它）
+ *   { type: "weave:focus", nodeId }      选中并居中某个节点
+ * 消息协议（桥 → 父页面）：
+ *   { type: "weave:ready" }              画布已就绪，可以注入数据
+ *   { type: "weave:change", payload }    画布内容变化（整份存档）
+ *   { type: "weave:open-entry", nodeId } 用户请求打开某条目的条目页
+ *   { type: "weave:status", message }    状态提示（同步中 / 同步完成 / 出错）
+ */
+(function () {
+  "use strict";
+
+  var App = window.App;
+  if (!App) {
+    return;
+  }
+
+  /** 画布数据的内存副本（代替 localStorage 的 flow_data） */
+  var memoryData = null;
+
+  /** 父页面地址（同源，仅作校验用；非同源时不接收消息） */
+  var parentOrigin = window.location.origin;
+
+  /** 防止「父页面写回 → 桥上报 → 父页面又写回」的循环 */
+  var suppressReport = false;
+
+  /** 详情浮层里当前展示的节点 id */
+  var currentDetailId = null;
+
+  /**
+   * 读取画布数据：优先内存副本，其次 localStorage（兼容直接用浏览器打开的场景）。
+   * @param {string} key localStorage 键
+   * @returns {string|null} 原始 JSON 字符串或 null
+   */
+  var originalGet = App._lsGet.bind(App);
+  App._lsGet = function (key) {
+    if (key === "flow_data") {
+      return memoryData === null ? originalGet(key) : memoryData;
+    }
+    return originalGet(key);
+  };
+
+  /**
+   * 写入画布数据：转交内存并上报父页面，避免画布内容只留在浏览器本地。
+   * @param {string} key localStorage 键
+   * @param {string} value 原始 JSON 字符串
+   * @returns {boolean} 是否写入成功
+   */
+  var originalSet = App._lsSet.bind(App);
+  App._lsSet = function (key, value) {
+    if (key === "flow_data") {
+      memoryData = value;
+      reportChange(value);
+      return true;
+    }
+    // 其余键（语言、对齐、键位等）继续走 localStorage
+    return originalSet(key, value);
+  };
+
+  /**
+   * 把整份画布存档上报给父页面。
+   * @param {string|null} raw 序列化后的 JSON 字符串
+   */
+  function reportChange(raw) {
+    if (suppressReport || !raw) {
+      return;
+    }
+    var payload = null;
+    try {
+      payload = JSON.parse(raw);
+    } catch (error) {
+      return;
+    }
+    send({ type: "weave:change", payload: payload });
+  }
+
+  /**
+   * 向父页面发消息。
+   * @param {object} message 消息体
+   */
+  function send(message) {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(message, parentOrigin);
+    }
+  }
+
+  /**
+   * 显示状态提示（父页面也会收到，便于它自己决定怎么呈现）。
+   * @param {string} message 提示文案
+   */
+  function notify(message) {
+    send({ type: "weave:status", message: message });
+    var el = document.getElementById("bridgeStatus");
+    if (el) {
+      el.textContent = message;
+      el.style.display = message ? "block" : "none";
+    }
+  }
+
+  /**
+   * 用父页面给的数据替换当前画布。
+   * Weave 的导入路径是 App._loadFromData(存档)：它会先完整校验、再整体替换画布状态，
+   * 这正是外部注入要走的入口（比直接改 canvasState 安全，能同步撤销历史与视口）。
+   * @param {object} payload Weave 存档结构 { nodes, connections, regions, viewport }
+   */
+  function applyData(payload) {
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+    memoryData = JSON.stringify(payload);
+    suppressReport = true;
+    try {
+      var ok = typeof App._loadFromData === "function" ? App._loadFromData(payload) : false;
+      if (!ok) {
+        notify("画布数据加载失败（存档格式校验未通过）");
+      } else {
+        var loading = document.getElementById("bridgeLoading");
+        if (loading) {
+          loading.remove();
+        }
+        if (typeof App.centerCanvasOnNodes === "function") {
+          App.centerCanvasOnNodes();
+        }
+      }
+    } catch (error) {
+      notify("画布加载失败：" + error.message);
+    }
+    // 装载完成后把这份数据视作「已同步基线」，避免刚打开就回写一遍
+    setTimeout(function () {
+      suppressReport = false;
+    }, 300);
+  }
+
+  /** 显示节点详情浮层（标题 + 摘要 + 打开条目） */
+  function showDetail(node) {
+    currentDetailId = node ? node.id : null;
+    var panel = document.getElementById("bridgeDetail");
+    if (!panel) {
+      return;
+    }
+    if (!node) {
+      panel.style.display = "none";
+      return;
+    }
+    var title = document.getElementById("bridgeDetailTitle");
+    var desc = document.getElementById("bridgeDetailDesc");
+    if (title) {
+      title.textContent = node.label || "(未命名)";
+    }
+    if (desc) {
+      desc.textContent = node.desc || "（这条还没有正文摘要）";
+    }
+    panel.style.display = "block";
+  }
+
+  // ---------- 与父页面通信 ----------
+  window.addEventListener("message", function (event) {
+    if (event.origin !== parentOrigin) {
+      return;
+    }
+    var data = event.data || {};
+    if (data.type === "weave:data") {
+      applyData(data.payload);
+      notify("");
+      return;
+    }
+    if (data.type === "weave:hide-loading") {
+      hideLoading();
+      return;
+    }
+    if (data.type === "weave:focus") {
+      var focusNode = App._getNodeById ? App._getNodeById(data.nodeId) : null;
+      if (focusNode) {
+        // 选中该节点并按当前缩放把它居中（Weave 没有「居中单个节点」的公开方法，这里直接算平移）
+        if (App.selectedNodeIds && typeof App.selectedNodeIds.add === "function") {
+          App.selectedNodeIds.clear();
+          App.selectedNodeIds.add(focusNode.id);
+        }
+        var stage = document.getElementById("canvasStage");
+        if (stage && App.scale) {
+          App.panX = stage.clientWidth / 2 - focusNode.x * App.scale;
+          App.panY = stage.clientHeight / 2 - focusNode.y * App.scale;
+        }
+        if (typeof App._renderNodes === "function") {
+          App._renderNodes();
+        }
+        if (typeof App._rebuildZOrder === "function") {
+          App._rebuildZOrder();
+        }
+        if (typeof App.applyViewTransform === "function") {
+          App.applyViewTransform();
+        }
+        showDetail(focusNode);
+      }
+    }
+  });
+
+  // ---------- 节点点击 → 事件上报 + 详情浮层 ----------
+  document.addEventListener(
+    "click",
+    function (event) {
+      var target = event.target;
+      var card = target && target.closest ? target.closest(".node") : null;
+      if (!card) {
+        // 点空白处收起浮层
+        if (target && target.closest && !target.closest("#bridgeDetail")) {
+          showDetail(null);
+        }
+        return;
+      }
+      // Weave 把节点 id 写在 dataset.nodeId 上
+      var nodeId = card.dataset ? card.dataset.nodeId : null;
+      var node = nodeId && App._getNodeById ? App._getNodeById(nodeId) : null;
+      if (!node) {
+        return;
+      }
+      showDetail(node);
+      // 双击进入条目页（与平台其它页面的习惯一致）
+      if (event.detail >= 2) {
+        send({ type: "weave:open-entry", nodeId: nodeId });
+      }
+    },
+    true,
+  );
+
+  // ---------- 注入浮层 UI ----------
+  /** 插入桥接用的样式与浮层，保证不依赖平台样式表 */
+  function mountUi() {
+    var style = document.createElement("style");
+    style.textContent = [
+      "#bridgeDetail{position:fixed;right:16px;bottom:16px;z-index:9999;max-width:320px;display:none;",
+      "background:#201d18;border:1px solid #4a4234;border-radius:10px;padding:12px 14px;color:#e8e0d3;",
+      "font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.45)}",
+      "#bridgeDetailTitle{font-size:15px;font-weight:600;margin-bottom:6px;color:#e8cf9a}",
+      "#bridgeDetailDesc{color:#b3a894;max-height:150px;overflow:auto;white-space:pre-wrap}",
+      "#bridgeDetailBtns{margin-top:10px;display:flex;gap:8px}",
+      "#bridgeDetailBtns button{cursor:pointer;border:1px solid #5b5140;background:#2a251d;color:#e8e0d3;",
+      "border-radius:6px;padding:4px 10px;font-size:12px}",
+      "#bridgeDetailBtns button:hover{border-color:#c9a15c;color:#e8cf9a}",
+      "#bridgeStatus{position:fixed;left:16px;bottom:16px;z-index:9999;display:none;background:#2a251d;",
+      "border:1px solid #5b5140;border-radius:8px;padding:6px 12px;color:#c9a15c;",
+      "font:12px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif}",
+      "#bridgeLoading{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;",
+      "background:#17150f;color:#a89c88;font:14px system-ui,-apple-system,'Segoe UI',sans-serif}",
+      "#bridgeLoading b{color:#c9a15c;font-weight:600}",
+    ].join("");
+    document.head.appendChild(style);
+
+    var loading = document.createElement("div");
+    loading.id = "bridgeLoading";
+    loading.innerHTML = "<div><b>正在从世界加载条目…</b></div>";
+    document.body.appendChild(loading);
+
+    var panel = document.createElement("div");
+    panel.id = "bridgeDetail";
+    panel.innerHTML =
+      '<div id="bridgeDetailTitle"></div>' +
+      '<div id="bridgeDetailDesc"></div>' +
+      '<div id="bridgeDetailBtns">' +
+      '<button type="button" id="bridgeOpenEntry">打开条目</button>' +
+      '<button type="button" id="bridgeCloseDetail">收起</button>' +
+      "</div>";
+    document.body.appendChild(panel);
+
+    var status = document.createElement("div");
+    status.id = "bridgeStatus";
+    document.body.appendChild(status);
+
+    var openButton = document.getElementById("bridgeOpenEntry");
+    if (openButton) {
+      openButton.addEventListener("click", function () {
+        if (currentDetailId) {
+          send({ type: "weave:open-entry", nodeId: currentDetailId });
+        }
+      });
+    }
+    var closeButton = document.getElementById("bridgeCloseDetail");
+    if (closeButton) {
+      closeButton.addEventListener("click", function () {
+        showDetail(null);
+      });
+    }
+  }
+
+  /** 启动：接管保存、挂 UI，并通知父页面可以下发数据 */
+  function boot() {
+    mountUi();
+    var originalSave = App.saveCanvas.bind(App);
+    App.saveCanvas = function () {
+      originalSave();
+    };
+    send({ type: "weave:ready" });
+  }
+
+  /** 父页面显式要求隐藏加载遮罩（数据注入后由它决定时机） */
+  function hideLoading() {
+    var el = document.getElementById("bridgeLoading");
+    if (el) {
+      el.remove();
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();

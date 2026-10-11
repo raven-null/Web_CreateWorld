@@ -149,8 +149,8 @@ export default function WorldPage() {
           ))}
         </div>
         <div style={{ marginTop: 16 }}>
-          <Link to={`/w/${world.id}/entries`} className="btn">
-            进入条目
+          <Link to={`/w/${world.id}/canvas`} className="btn">
+            进入画布
           </Link>
         </div>
       </div>

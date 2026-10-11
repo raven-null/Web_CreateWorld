@@ -1476,6 +1476,94 @@ mark {
   grid-template-columns: 150px minmax(0, 1fr);
 }
 
+/* ============ 世界画布页（Weave iframe 宿主） ============ */
+/* 画布要占满侧边栏右侧的全部空间，因此内容区在承载画布时去掉内边距 */
+.world-content:has(> .canvas-page) {
+  padding: 0;
+  max-width: none;
+}
+
+.canvas-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 58px);
+  min-height: 420px;
+}
+
+.canvas-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+
+.canvas-toolbar-left,
+.canvas-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.canvas-title {
+  font-family: var(--font-serif);
+  font-size: 16px;
+}
+
+.canvas-sync {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.canvas-sync-idle {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.canvas-sync-syncing {
+  color: #d8b26a;
+}
+
+.canvas-sync-error {
+  color: #e07a6a;
+}
+
+.canvas-sync-detail {
+  font-size: 12px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  display: block;
+  background: #17150f;
+}
+
+@media (max-width: 768px) {
+  /* 移动端顶栏换行后高度不固定，画布改用视口高度留出余量 */
+  .canvas-page {
+    height: calc(100vh - 118px);
+  }
+
+  .canvas-sync-detail {
+    display: none;
+  }
+}
+
 @media (max-width: 1024px) {
   .world-layout {
     grid-template-columns: 200px minmax(0, 1fr);

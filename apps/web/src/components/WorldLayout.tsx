@@ -46,8 +46,7 @@ export default function WorldLayout() {
         {world && <span className="badge">{VISIBILITY_LABELS[world.visibility]}</span>}
 
         <nav className="world-sidebar-nav">
-          <NavLink to={`/w/${worldId}/entries`}>条目</NavLink>
-          <NavLink to={`/w/${worldId}/graph`}>关系图</NavLink>
+          <NavLink to={`/w/${worldId}/canvas`}>画布</NavLink>
           <NavLink to={`/w/${worldId}/timeline`}>时间线</NavLink>
           <NavLink to={`/w/${worldId}/maps`}>地图</NavLink>
           <NavLink to={`/w/${worldId}/search`}>全文搜索</NavLink>

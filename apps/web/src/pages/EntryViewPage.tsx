@@ -92,7 +92,7 @@ export default function EntryViewPage() {
       <div className="entry-view-head">
         <div>
           <p className="page-subtitle" style={{ marginBottom: 6 }}>
-            <Link to={`/w/${worldId}/entries`}>{detail.worldName} · 条目</Link> / {detail.categoryName}
+            <Link to={`/w/${worldId}/canvas`}>{detail.worldName} · 画布</Link> / {detail.categoryName}
           </p>
           <h1 className="page-title" style={{ marginBottom: 4 }}>
             {detail.title}
