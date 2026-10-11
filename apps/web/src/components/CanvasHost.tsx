@@ -35,6 +35,21 @@ interface BridgeMessage {
   payload?: WeavePayload;
   nodeId?: string;
   message?: string;
+  readOnly?: boolean;
+}
+
+/**
+ * 让画布进入只读模式。
+ *
+ * 背景：未登录（或没有编辑权限）时，条目是「可读不可写」——服务端会 401/403。
+ * 早先的实现照样允许拖拽与新建，于是每次改动都发一堆注定失败的请求（实测刷出上百条 401）。
+ * 进入只读后 Weave 自身会拦住编辑动作，从源头避免无效请求。
+ *
+ * @param readOnly 是否只读
+ */
+function setCanvasReadOnly(readOnly: boolean): void {
+  const frame = document.querySelector<HTMLIFrameElement>(".canvas-frame");
+  frame?.contentWindow?.postMessage({ type: "weave:readonly", readOnly }, window.location.origin);
 }
 
 /** 条目写回的最大尝试次数（首次 + 版本冲突重试一次） */
@@ -87,6 +102,7 @@ async function saveEntryBlocks(
     } catch (error) {
       const conflict = error instanceof ApiError && error.status === 409;
       if (!conflict) {
+        // 未登录 / 无权限：不再重试，交由上层统一处理（避免刷屏的 401）
         return null;
       }
       // 版本冲突：下一轮用重新拉取到的版本重试
@@ -125,6 +141,8 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
   const payloadCategoryRef = useRef("");
   /** 同步串行化：同一时刻只跑一个合并，避免对同一条目并发写导致 409 */
   const queueRef = useRef<Promise<void>>(Promise.resolve());
+  /** 是否因未登录/无权限而锁定状态：锁定后不再发起任何写请求 */
+  const statusLockedRef = useRef(false);
   /** 组件卸载标记：避免异步回写 setState */
   const aliveRef = useRef(true);
 
@@ -168,33 +186,57 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         const baselineTitles = baselineTitlesRef.current;
         const currentIds = new Set(payload.nodes.map((node) => node.id));
         const removedIds = [...baselineTitles.keys()].filter((id) => !currentIds.has(id));
+        /** 本轮是否出现过写失败（最后统一汇报，避免被后续 setState 覆盖） */
+        let failedMessage = "";
 
         // 1) 画布上被删掉的节点 → 删除对应条目
         for (const id of removedIds) {
-          await api(`/api/entries/${id}`, { method: "DELETE" }).catch(() => undefined);
+          await api(`/api/entries/${id}`, { method: "DELETE" }).catch((err: unknown) => {
+            if (err instanceof ApiError && err.status === 401) {
+              statusLockedRef.current = true;
+              failedMessage = "未登录，改动未保存";
+            }
+          });
           detailCacheRef.current.delete(id);
         }
 
         // 2) 画布上新增的节点 → 新建条目（id 用临时 id，建好后做映射）
         const idMap = new Map<string, string>();
-        for (const node of payload.nodes) {
-          if (detailCacheRef.current.has(node.id)) {
-            continue;
-          }
-          try {
-            const created = await api<{ id: string }>(`/api/worlds/${world.id}/entries`, {
-              method: "POST",
-              body: { title: node.label || "未命名条目", categoryId },
-            });
-            idMap.set(node.id, created.id);
-          } catch (err) {
-            canvasInternals.setState({ phase: "error", message: `新建条目失败：${(err as Error).message}` });
+        if (!statusLockedRef.current) {
+          for (const node of payload.nodes) {
+            if (detailCacheRef.current.has(node.id)) {
+              continue;
+            }
+            try {
+              const created = await api<{ id: string }>(`/api/worlds/${world.id}/entries`, {
+                method: "POST",
+                body: { title: node.label || "未命名条目", categoryId },
+              });
+              idMap.set(node.id, created.id);
+            } catch (err) {
+              // 未登录 / 无权限：立刻停止后续写操作，避免刷屏的 401
+              if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+                statusLockedRef.current = true;
+                failedMessage = err.status === 401 ? "未登录，改动未保存" : "没有编辑权限，改动未保存";
+                break;
+              }
+              failedMessage = `新建条目失败：${(err as Error).message}`;
+            }
           }
         }
 
         // 3) 改名与连线：标题变化或出边变化的条目，各一次 PUT 写回
         const outgoing = outgoingByNode(payload);
         const titleOf = new Map(payload.nodes.map((node) => [node.id, node.label]));
+
+        // 未登录 / 无权限时不做任何写操作，避免刷出一屏 401
+        if (statusLockedRef.current) {
+          canvasInternals.setState({
+            phase: "error",
+            message: failedMessage || "未登录或没有编辑权限，改动未保存",
+          });
+          return;
+        }
 
         for (const node of payload.nodes) {
           const realId = idMap.get(node.id) ?? node.id;
@@ -261,7 +303,11 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
             detail ? { version: detail.version, blocks: detail.blocks } : null,
           );
           if (newVersion === null) {
-            canvasInternals.setState({ phase: "error", message: `保存条目失败（版本冲突重试后仍未成功）` });
+            // saveEntryBlocks 返回 null 时已在内部判断过 401/403；这里只兜底记录
+            failedMessage = failedMessage || "保存条目失败（版本冲突重试后仍未成功）";
+            if (statusLockedRef.current) {
+              break;
+            }
             continue;
           }
           // 写回成功后才更新缓存：否则下次会用过期 version 触发 409
@@ -280,14 +326,19 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         writeSnapshot(world.id, payloadCategory, payload);
         rememberBaseline(payload);
         edgeSetsRef.current = outgoingByNode(payload);
-        canvasInternals.setState({ phase: "ready", message: "已保存" });
+        if (failedMessage) {
+          canvasInternals.setState({ phase: "error", message: failedMessage });
+        } else {
+          canvasInternals.setState({ phase: "ready", message: "已保存" });
+        }
       } catch (err) {
         canvasInternals.setState({ phase: "error", message: `同步失败：${(err as Error).message}` });
       } finally {
         syncingRef.current = false;
         const queued = pendingPayloadRef.current;
         pendingPayloadRef.current = null;
-        if (queued) {
+        // 未登录/无权限时不再重试排队内容，避免无限刷请求
+        if (queued && !statusLockedRef.current) {
           void mergeChanges(queued, world, categoryId);
         }
       }
@@ -374,6 +425,14 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         }
 
         const categoryName = world.categories.find((item) => item.id === categoryId)?.name ?? "条目";
+
+        // 权限决定画布能否编辑：未登录（canEdit=false）时进入只读，避免注定失败的写请求
+        const canEdit = Boolean((world as { canEdit?: boolean }).canEdit);
+        statusLockedRef.current = !canEdit;
+        setCanvasReadOnly(!canEdit);
+        if (!canEdit) {
+          canvasInternals.setState({ message: "只读：登录后才能编辑" });
+        }
         const idSet = new Set(entries.map((entry) => entry.id));
         const edges = graph.links
           .map((link) => ({ from: String(link.source), to: String(link.target) }))
@@ -470,6 +529,11 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         return;
       }
       if (data.type === "weave:change" && data.payload) {
+        // 只读状态（未登录/无权限）下不做任何写回：改动只在本地画布上，刷新即还原
+        if (statusLockedRef.current) {
+          canvasInternals.setState({ message: "只读：登录后才能保存改动" });
+          return;
+        }
         const current = canvasInternals.getState();
         canvasInternals.setState({ phase: "syncing", message: "画布已修改，准备保存…" });
         void (async () => {

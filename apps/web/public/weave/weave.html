@@ -8651,23 +8651,30 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
 <script>
 /* [>平台同步桥<] 由 scripts/inline-bridge.mjs 从 public/weave/bridge.js 内联，请勿直接编辑本段 */
 /**
- * Weave ↔ 世界观平台 的同步桥（由 canvas 页面以 iframe 方式加载 Weave 时注入）。
+ * Weave ↔ 世界观平台 的同步桥（由画布 iframe 加载，构建时内联进 weave.html）。
  *
  * 为什么不改 Weave 本体：Weave 的工程规范要求「始终保持为单 HTML 文件、13 个模块按固定
- * 顺序拼接」，直接改它的内联脚本会破坏它的结构守护。因此这里做**外层桥**，只在 HTML 末尾
- * 追加一行 ，其余文件原样保持。
+ * 顺序拼接」，直接改它的内联脚本会破坏它的结构守护。因此这里做**外层桥**：Weave 本体零改动，
+ * 桥由 `apps/web/scripts/inline-bridge.mjs` 在构建时内联进 weave.html 末尾的独立 <script>。
+ * 本文件是桥的源码，改完运行一次构建（或 `node apps/web/scripts/inline-bridge.mjs`）即可生效。
  *
- * 桥的三件事：
+ * 桥负责四件事：
  *   1. 数据接管：`flow_data` 这个 localStorage 键改为走内存 + postMessage，画布内容由父页面
  *      （React 页面）从数据库加载后注入，不再依赖浏览器本地存储；
- *   2. 变更上报：Weave 每次 saveCanvas 都把整份存档发给父页面，由父页面做差异合并写回数据库；
- *   3. 节点详情浮层：点击节点后展示条目标题与摘要，并提供「打开条目」入口。
+ *   2. 变更上报：Weave 每次存盘都把整份存档发给父页面，由父页面做差异合并写回数据库；
+ *   3. 界面改造（全部靠移动 DOM 与注入 CSS，不改 Weave 源码）：
+ *      · 顶栏重做——左侧平铺的颜色（每种颜色标注它代表的分类）、右侧操作按钮、统计贴最右；
+ *      · 主题配色——把 Weave 的浅色变量换成平台深色系；
+ *      · 侧边栏补一个网格背景开关；颜色与分类的对应关系用标签标出；
+ *   4. 节点详情浮层：点击节点展示条目标题与摘要，双击进条目页。
  *
  * 消息协议（父页面 → 桥）：
  *   { type: "weave:data", payload }      注入画布数据（首次加载与外部改动后刷新都用它）
+ *   { type: "weave:readonly", readOnly } 按当前用户权限切换只读
  *   { type: "weave:focus", nodeId }      选中并居中某个节点
+ *   { type: "weave:hide-loading" }       隐藏加载遮罩
  * 消息协议（桥 → 父页面）：
- *   { type: "weave:ready" }              画布已就绪，可以注入数据
+ *   { type: "weave:ready" }              画布已就绪，可以注入数据（会反复广播直到收到数据）
  *   { type: "weave:change", payload }    画布内容变化（整份存档）
  *   { type: "weave:open-entry", nodeId } 用户请求打开某条目的条目页
  *   { type: "weave:status", message }    状态提示（同步中 / 同步完成 / 出错）
@@ -8774,6 +8781,44 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   /** 遮罩保护：超过该时间仍未成功载入数据，就把遮罩换成可读的错误提示 */
   var LOADING_TIMEOUT_MS = 6000;
   var loadingTimer = null;
+
+  /**
+   * 设置画布的只读状态（父页面按当前用户权限下发）。
+   *
+   * 直接复用 Weave 自己的只读开关逻辑（readOnly 标记 + 侧边栏按钮高亮 + 画布 read-only 类），
+   * 而不是调用它的 toggleReadOnly（那会弹出提示并且是「切换」语义）。
+   * @param {boolean} readOnly 是否只读
+   */
+  function applyReadOnly(readOnly) {
+    if (App.readOnly === readOnly) {
+      return;
+    }
+    App.readOnly = readOnly;
+    var button = document.getElementById("sidebarReadOnlyBtn");
+    if (button) {
+      button.classList.toggle("active", readOnly);
+    }
+    var stage = document.getElementById("canvasStage");
+    if (stage) {
+      stage.classList.toggle("read-only", readOnly);
+    }
+    if (readOnly) {
+      // 关掉可能正在进行的编辑动作，让只读立即生效
+      if (typeof App.closeInlineEdit === "function" && App._inlineEditTarget) {
+        App.closeInlineEdit();
+      }
+      if (typeof App._closeDescEdit === "function" && App._descEditNodeId) {
+        App._closeDescEdit();
+      }
+      if (typeof App._clearCtx === "function") {
+        App._clearCtx();
+      }
+    }
+    if (typeof App.renderCanvas === "function") {
+      App.renderCanvas({ center: false });
+    }
+    log(readOnly ? "已切换为只读（未登录或无编辑权限）" : "已切换为可编辑");
+  }
 
   /** 是否已经收到父页面的画布数据（收到后就不再重发就绪信号） */
   var dataReceived = false;
@@ -8907,6 +8952,12 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       hideLoading();
       return;
     }
+    if (data.type === "weave:readonly") {
+      // 父页面按「当前用户是否有编辑权限」切换只读：未登录时画布不允许编辑，
+      // 从源头避免注定 401/403 的写请求
+      applyReadOnly(Boolean(data.readOnly));
+      return;
+    }
     if (data.type === "weave:focus") {
       var focusNode = App._getNodeById ? App._getNodeById(data.nodeId) : null;
       if (focusNode) {
@@ -9008,22 +9059,156 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   /** 加深一档的红色（节点头部渐变用） */
   var CUSTOM_COLOR_DARK = "#c9403c";
 
-  // ---------- 顶栏品牌区：隐藏（平台内不再需要它，也避免误触彩蛋） ----------
+  // ---------- 顶栏重做：左「颜色（展开）」| 右「清空 / 导入导出 / 适应 / 撤销重做」| 最右「统计」 ----------
 
-  /** 隐藏 Weave 顶栏的品牌区（它带一个点击彩蛋，平台内不需要） */
-  function hideBrand() {
-    var brand = document.getElementById("brandSigma");
-    if (brand) {
-      brand.style.display = "none";
+  /** 色点容器 id（顶栏里平铺的那一排颜色） */
+  var COLOR_DOTS_ID = "bridgeColorDots";
+
+  /**
+   * 顶栏重做。
+   *
+   * 做法：**只移动 DOM、不重建元素**——Weave 用 id 取元素绑事件（BIND_CLICKS 表），
+   * 元素与 id 原地保留即可，事件绑定完全不受影响。
+   *   · 隐藏：品牌区（带彩蛋，平台内不需要）、原「颜色 ▾」下拉触发器
+   *   · 删除：「+ 节点」（双击空白处即可新建节点）
+   *   · 右移：清空 / 导出 / 导入 / 适应 / 撤销 / 重做，统计徽章贴最右
+   *   · 颜色：改为**平铺在顶栏里的一排色点**（复用 Weave 的 _buildDotPanel，
+   *     选色逻辑与状态完全一致），另有「自选色」按钮
+   */
+  function rebuildHeader() {
+    var header = document.querySelector(".header");
+    if (!header) {
+      log("未找到 .header，跳过顶栏重做");
+      return;
     }
+
+    var addNode = document.getElementById("btnAddNode");
+    var colorDrop = document.getElementById("genColorDropdown");
+    var genTrigger = document.getElementById("genColorTrigger");
+    var clearBtn = document.getElementById("btnClearAllNodes");
+    var exportBtn = document.getElementById("btnDoExport");
+    var importBtn = document.getElementById("btnDoImport");
+    var fitBtn = document.getElementById("btnCenterCanvas");
+    var undoBtn = document.getElementById("undoBtn");
+    var redoBtn = document.getElementById("redoBtn");
+    var badge = document.getElementById("statusBadge");
+
+    // 「+ 节点」按需求移除
+    if (addNode) {
+      addNode.remove();
+    }
+    // 原颜色下拉（触发器 + 折叠面板）不再使用，色点改为平铺
+    if (colorDrop && colorDrop.parentNode) {
+      colorDrop.parentNode.removeChild(colorDrop);
+    }
+
+    header.innerHTML = "";
+
+    // 左：颜色（标题 + 当前色圆点 + 平铺色点 + 自选色）
+    var colorGroup = document.createElement("div");
+    colorGroup.className = "bridge-color";
+    var trigger = document.createElement("span");
+    trigger.className = "bridge-color-label";
+    trigger.textContent = "颜色";
+    var currentDot = document.createElement("span");
+    currentDot.className = "bridge-current-dot";
+    currentDot.id = "bridgeCurrentColor";
+    trigger.appendChild(currentDot);
+    colorGroup.appendChild(trigger);
+
+    var dotRow = document.createElement("div");
+    dotRow.className = "bridge-color-dots";
+    dotRow.id = COLOR_DOTS_ID;
+    colorGroup.appendChild(dotRow);
+    header.appendChild(colorGroup);
+
+    // 右：操作按钮组
+    var group = document.createElement("div");
+    group.className = "btn-group bridge-actions";
+    /** 追加按钮，并可在前面补一个分隔线 */
+    var append = function (el, separator) {
+      if (!el) {
+        return;
+      }
+      if (separator) {
+        var sep = document.createElement("span");
+        sep.className = "sep";
+        group.appendChild(sep);
+      }
+      group.appendChild(el);
+    };
+    append(clearBtn, false);
+    append(exportBtn, true);
+    append(importBtn, false);
+    append(fitBtn, true);
+    append(undoBtn, true);
+    append(redoBtn, false);
+    header.appendChild(group);
+
+    // 最右：统计（节点数 · 连线数）
+    if (badge) {
+      badge.classList.add("bridge-badge");
+      header.appendChild(badge);
+    }
+
+    log("顶栏已重做");
   }
 
   /**
-   * 顶栏布局调整：品牌区收起后，把按钮组靠左，避免左侧留出一大块空白。
-   * 用 body 上的标记类控制，不直接改元素内联样式（Weave 重渲染也不受影响）。
+   * 用 Weave 自己的色点面板把颜色平铺成一排，并给每个色点标出它代表的分类。
+   * 复用 _buildDotPanel 的意义：选色后的状态同步（节点默认色、localStorage 偏好、
+   * 详情弹窗里的圆点高亮）全部由 Weave 自己完成，桥不需要复制那套逻辑。
    */
-  function initHeaderLayout() {
-    document.body.classList.add("cw-hide-brand");
+  function buildColorDots() {
+    var container = document.getElementById(COLOR_DOTS_ID);
+    if (!container || typeof App._buildDotPanel !== "function") {
+      return;
+    }
+    App._buildDotPanel(COLOR_DOTS_ID, "bridge-", App._selectedGenColor, function (btn) {
+      var next = btn.dataset.c;
+      App._setGenColor(next);
+      updateCurrentColor(next);
+    });
+
+    // 色点下方显示分类名（红色是自定义色，同样要标出）
+    var dots = container.querySelectorAll("[data-c]");
+    for (var i = 0; i < dots.length; i += 1) {
+      var color = dots[i].dataset.c;
+      var category = color === CUSTOM_COLOR_HEX ? COLOR_CATEGORY.red : COLOR_CATEGORY[color];
+      if (category) {
+        dots[i].setAttribute("data-cw-label", category);
+        dots[i].title = category + "（" + (color === CUSTOM_COLOR_HEX ? "红" : color) + "）";
+      }
+    }
+
+    // 自选色入口
+    var wheel = document.createElement("button");
+    wheel.type = "button";
+    wheel.className = "bridge-wheel";
+    wheel.title = "自选颜色";
+    wheel.innerHTML =
+      '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"' +
+      ' stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line>' +
+      '<line x1="5" y1="12" x2="19" y2="12"></line></svg>';
+    wheel.addEventListener("click", function () {
+      App._gOpenCustomPicker();
+      window.setTimeout(function () {
+        updateCurrentColor(App._selectedGenColor);
+      }, 400);
+    });
+    container.appendChild(wheel);
+
+    updateCurrentColor(App._selectedGenColor);
+  }
+
+  /** 刷新「当前颜色」小圆点的颜色 */
+  function updateCurrentColor(color) {
+    var dot = document.getElementById("bridgeCurrentColor");
+    if (!dot) {
+      return;
+    }
+    var hex = typeof App._resolveColor === "function" ? App._resolveColor(color).hex : color;
+    dot.style.background = hex;
   }
 
   // ---------- 颜色 ↔ 分类：在调色板圆点上标出每个颜色代表什么 ----------
@@ -9086,10 +9271,10 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     var red = CUSTOM_COLOR_HEX;
     var redDark = CUSTOM_COLOR_DARK;
     style.textContent = [
-      // 面板加宽并让圆点排布留出标签空间
+      // 面板加宽并让圆点排布留出标签空间（详情弹窗里的调色板仍用它）
       "#genColorPanel .g-dot-wrap{gap:10px 8px !important;max-width:290px;margin-bottom:16px}",
       "#genColorPanel .g-dot{width:26px;height:26px}",
-      // 标签：绝对定位在圆点下方，不改变圆点尺寸与点击区域
+      // 色点下方的分类标签：绝对定位在圆点下方，不改变圆点尺寸与点击区域
       "[data-cw-label]{position:relative}",
       "[data-cw-label]::after{content:attr(data-cw-label);position:absolute;left:50%;top:100%;",
       "transform:translateX(-50%);margin-top:4px;font-size:10px;line-height:1;color:var(--text-secondary);",
@@ -9101,6 +9286,49 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       '.node[data-cw-color="' + red + '"] .socket{border-color:' + red + "}",
       '.node[data-cw-color="' + red + '"] .socket-inner{background:' + red + "}",
       '.node[data-cw-color="' + red + '"] .socket{color:' + red + "}",
+    ].join("");
+    document.head.appendChild(style);
+  }
+
+  /**
+   * 顶栏的布局样式。
+   *
+   * 改写 Weave 原来的「品牌在左、按钮组在右」为「颜色在左、操作按钮在右、统计贴最右」。
+   * 全部用 CSS 完成，不动 Weave 的位置样式；色点行在顶栏里平铺，圆点比面板里的小一档，
+   * 保证 56px 的顶栏放得下并且标签不会被裁掉。
+   */
+  function injectHeaderStyle() {
+    var style = document.createElement("style");
+    style.id = "bridgeHeaderStyle";
+    style.textContent = [
+      // 顶栏：左右两端对齐（统计会因 margin-left:auto 被推到最右）
+      ".header{display:flex !important;align-items:center !important;justify-content:flex-start !important;",
+      "gap:14px !important;padding:0 16px !important}",
+      ".header .header-brand{display:none !important}",
+      // 颜色组：标题 → 当前色 → 平铺色点 → 自选色
+      ".bridge-color{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0}",
+      ".bridge-color-label{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);",
+      "white-space:nowrap;flex-shrink:0}",
+      ".bridge-current-dot{width:10px;height:10px;border-radius:50%;display:inline-block;",
+      "box-shadow:0 0 0 1px rgba(255,255,255,.18)}",
+      ".bridge-color-dots{display:flex;align-items:center;gap:12px;padding-bottom:11px}",
+      ".bridge-color-dots .bridge-dot{width:18px;height:18px;border-radius:50%;border:2px solid transparent;",
+      "cursor:pointer;padding:0;transition:transform .15s,box-shadow .15s;position:relative;flex-shrink:0}",
+      ".bridge-color-dots .bridge-dot:hover{transform:scale(1.18)}",
+      ".bridge-color-dots .bridge-dot.active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.35)}",
+      ".bridge-color-dots [data-cw-label]::after{font-size:9.5px;margin-top:3px;color:var(--text-faint)}",
+      ".bridge-wheel{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;",
+      "justify-content:center;cursor:pointer;background:var(--bg-input);border:1px solid var(--border);",
+      "color:var(--text-secondary);padding:0;flex-shrink:0}",
+      ".bridge-wheel:hover{color:var(--accent);border-color:var(--accent)}",
+      // 操作按钮组靠右
+      ".header .bridge-actions{margin-left:auto}",
+      // 统计徽章贴最右
+      ".header .bridge-badge{margin-left:12px;flex-shrink:0;white-space:nowrap}",
+      // 窄屏：色点行允许横向滚动，统计徽章保持可见
+      "@media (max-width:820px){.header{gap:10px !important;padding:6px 10px !important}",
+      ".bridge-color-dots{overflow-x:auto;scrollbar-width:none}.bridge-color-dots::-webkit-scrollbar{display:none}}",
+      "@media (max-height:620px){.bridge-color-dots{padding-bottom:9px}}",
     ].join("");
     document.head.appendChild(style);
   }
@@ -9235,10 +9463,6 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       ".node{background:var(--bg-card);border-color:var(--border);box-shadow:0 6px 20px rgba(0,0,0,.35);}",
       ".node:hover{box-shadow:0 8px 26px rgba(0,0,0,.45);}",
       ".socket{background:var(--bg-card);}",
-      // 顶栏：品牌区收起后按钮组靠左，避免左侧留出大片空白
-      "body.cw-hide-brand .header-brand{display:none}",
-      "body.cw-hide-brand .header{justify-content:flex-start}",
-      "body.cw-hide-brand .header .btn-group{margin-left:0}",
     ].join("");
     document.head.appendChild(style);
   }
@@ -9302,13 +9526,14 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     }
   }
 
-  /** 启动：挂 UI、品牌区隐藏、颜色标注与自定义色样式、侧边栏开关，然后通知父页面下发数据 */
+  /** 启动：挂 UI、重做顶栏、颜色标注与自定义色样式、侧边栏开关，然后通知父页面下发数据 */
   function boot() {
     mountUi();
-    hideBrand();
-    initHeaderLayout();
+    rebuildHeader();
+    buildColorDots();
     startNodeColorSync();
     injectColorLabelStyle();
+    injectHeaderStyle();
     startColorLabels();
     startGridToggle();
     log("桥已启动，等待父页面下发数据");
