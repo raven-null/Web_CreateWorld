@@ -8775,6 +8775,38 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   var LOADING_TIMEOUT_MS = 6000;
   var loadingTimer = null;
 
+  /** 是否已经收到父页面的画布数据（收到后就不再重发就绪信号） */
+  var dataReceived = false;
+
+  /** 就绪信号的重发定时器 */
+  var readyRetryTimer = null;
+
+  /**
+   * 通知父页面「桥已就绪」。
+   *
+   * 为什么要重发：iframe 里的桥可能在极短时间内就绪，而父页面（React）此时可能还没挂上
+   * message 监听——单次发送会永久丢失，表现为画布一直停在「加载中」、桥一直等不到数据。
+   * 因此每 800ms 重发一次，直到真正收到数据为止。
+   */
+  function announceReady() {
+    if (dataReceived) {
+      if (readyRetryTimer !== null) {
+        clearInterval(readyRetryTimer);
+        readyRetryTimer = null;
+      }
+      return;
+    }
+    send({ type: "weave:ready" });
+  }
+
+  /** 开始反复广播就绪信号，直到数据送达 */
+  function startReadyAnnounce() {
+    announceReady();
+    if (readyRetryTimer === null) {
+      readyRetryTimer = setInterval(announceReady, 800);
+    }
+  }
+
   /** 载入失败时替换遮罩内容，避免出现永远转不完的「正在加载」 */
   function showLoadFailure(reason) {
     var el = document.getElementById("bridgeLoading");
@@ -8861,6 +8893,12 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     }
     var data = event.data || {};
     if (data.type === "weave:data") {
+      // 数据已送达：停止重发就绪信号
+      dataReceived = true;
+      if (readyRetryTimer !== null) {
+        clearInterval(readyRetryTimer);
+        readyRetryTimer = null;
+      }
       applyData(data.payload);
       notify("");
       return;
@@ -9278,7 +9316,8 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       log("等待数据超时");
       showLoadFailure("等待世界数据超时（父页面未下发或接口未返回）");
     }, LOADING_TIMEOUT_MS);
-    send({ type: "weave:ready" });
+    // 反复广播就绪信号：父页面可能比桥晚挂上监听，单次发送会丢
+    startReadyAnnounce();
   }
 
   /** 隐藏加载遮罩（数据注入成功后调用） */

@@ -332,6 +332,7 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         return;
       }
       loadingKeyRef.current = key;
+      console.info("[canvas] 开始加载", key, "force=", force);
 
       // 1) 先用本地快照立刻上屏（切分类、切页面回来时几乎无感）
       const cached = force ? null : readSnapshot(targetWorldId, categoryId);
@@ -388,6 +389,7 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         pushToCanvas(payload, categoryId);
         rememberBaseline(payload);
         writeSnapshot(targetWorldId, categoryId, payload);
+        console.info("[canvas] 已下发画布数据", categoryId, entries.length, "条目", payload.connections.length, "连线");
         canvasInternals.setState({
           worldId: targetWorldId,
           categoryId,
@@ -396,6 +398,7 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
           message: `已载入 ${entries.length} 条`,
         });
       } catch (err) {
+        console.error("[canvas] 加载失败", err);
         if (aliveRef.current) {
           canvasInternals.setState({ phase: "error", message: `加载失败：${(err as Error).message}` });
         }
@@ -456,12 +459,13 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         pendingPayloadRef.current = null;
         pendingCategoryRef.current = "";
         if (pending) {
+          // 桥晚于数据就绪：把挂起的画布数据补发过去
           pushToCanvas(pending, pendingCategory);
-        } else {
-          const current = canvasInternals.getState();
-          if (current.worldId && current.categoryId) {
-            void loadCanvas(current.worldId, current.categoryId);
-          }
+        }
+        // 无论有没有挂起数据，都确保当前分类已加载（重复调用由 loadCanvas 内部去重）
+        const current = canvasInternals.getState();
+        if (current.worldId && current.categoryId) {
+          void loadCanvas(current.worldId, current.categoryId);
         }
         return;
       }
