@@ -41,19 +41,26 @@ app.route("/api", migrateRoutes);
 /**
  * 首屏公开接口的**边缘缓存**（挂在会话解析之前：这类请求无需认证，也就不必查会话）。
  *
- * 为什么必须加：`/api/discover` 与 `/api/discover/tags` 是任何访客打开首页都会调的接口，
- * 而 Worker 冷启动实测可达 1.9s——每个用户第一次访问、或缓存过期后再访问都要吃一遍。
- * 用 Cloudflare Cache API 在边缘存 60 秒：命中时只需几十毫秒，
- * 既不要求用户做任何设置，也不受「谁先来谁等冷启动」影响。
+ * 为什么必须加：条目列表、关系图是访客点进某个世界时**必然要调**的接口，而 Worker 冷启动
+ * 实测可达 1.9s、跨境往返再叠几百毫秒——用户点一下卡片就要等好几秒，甚至触发前端 8 秒超时。
+ * 用 Cloudflare Cache API 在边缘存 60 秒：命中时只需几十毫秒，谁先来都不用吃冷启动。
  *
- * 只缓存这两个公开只读接口，带登录态的私有数据一律不碰。
+ * ⚠️ 只缓存**内容与访客身份无关**的接口。
+ * `/api/worlds/:id` 虽然也是公开读，但它的响应带 `canEdit` / `myRole`（随登录状态变化），
+ * 放进共享缓存会把「先访问者的权限」带给后续访客（要么误判可编辑、要么误判只读），
+ * 因此改用浏览器私有缓存（见下方 CACHEABLE_GET_PATHS）。
  */
-const EDGE_CACHED_PATHS = new Set(["/api/discover", "/api/discover/tags"]);
+const EDGE_CACHED_PATH_PATTERNS = [/^\/api\/discover$/, /^\/api\/discover\/tags$/, /^\/api\/worlds\/[\w-]+\/(entries|graph)$/];
 const EDGE_CACHE_TTL_SECONDS = 60;
+
+/** 判定某个 GET 请求是否可以走边缘缓存 */
+function isEdgeCacheable(pathname: string): boolean {
+  return EDGE_CACHED_PATH_PATTERNS.some((pattern) => pattern.test(pathname));
+}
 
 app.use("/api/*", async (c, next) => {
   const url = new URL(c.req.url);
-  const eligible = c.req.method === "GET" && EDGE_CACHED_PATHS.has(url.pathname);
+  const eligible = c.req.method === "GET" && isEdgeCacheable(url.pathname);
   if (!eligible || typeof caches === "undefined") {
     await next();
     return;
@@ -84,28 +91,31 @@ app.use("/api/*", async (c, next) => {
 app.use("/api/*", sessionMiddleware);
 
 /**
- * 只读接口的浏览器缓存：画布每次打开都要读世界信息、条目列表与关系图。
- * 仅限「无副作用」的 GET 路径，并且**跳过首屏那两个已被边缘缓存接管的接口**
- * （见 EDGE_CACHED_PATHS）——那些接口的 Cache-Control 由边缘缓存中间件统一设置；
- * 若在这里再写成 `private`，会禁止共享缓存写入，边缘缓存就永远命中不了。
+ * 私有只读接口的浏览器缓存。
+ *
+ * 世界信息（`/api/worlds/:id`）带 `canEdit` / `myRole`，随登录状态变化，
+ * **不能进共享缓存**（会把先访问者的权限带给后续访客），但可以进浏览器私有缓存：
+ * 同一用户短时间内切页、返回、刷新都不必再等 Worker。时间线、地图同理。
  */
-const CACHEABLE_GET_PATHS = [/^\/api\/worlds\/[\w-]+$/, /^\/api\/worlds\/[\w-]+\/(entries|graph|timeline|maps)$/];
+const CACHEABLE_GET_PATHS = [/^\/api\/worlds\/[\w-]+$/, /^\/api\/worlds\/[\w-]+\/(timeline|maps)$/];
+const PRIVATE_CACHE_SECONDS = 60;
 
 app.use("/api/*", async (c, next) => {
   await next();
   const isGet = c.req.method === "GET";
   const pathname = new URL(c.req.url).pathname;
+  // 已被边缘缓存接管的公开接口不再重复处理（那里会写成 private，反而会禁止共享缓存写入）
   const cacheable =
     isGet &&
     c.res.status === 200 &&
-    !EDGE_CACHED_PATHS.has(pathname) &&
+    !isEdgeCacheable(pathname) &&
     CACHEABLE_GET_PATHS.some((pattern) => pattern.test(pathname));
   if (!cacheable) {
     return;
   }
   const headers = new Headers(c.res.headers);
-  // private：只进浏览器缓存不进 CDN；stale-while-revalidate 让刷新先用旧数据顶上
-  headers.set("cache-control", "private, max-age=30, stale-while-revalidate=60");
+  // private：只进浏览器缓存不进共享缓存；stale-while-revalidate 让刷新先用旧数据顶上
+  headers.set("cache-control", `private, max-age=${PRIVATE_CACHE_SECONDS}, stale-while-revalidate=120`);
   c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
 });
 

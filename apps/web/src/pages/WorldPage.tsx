@@ -34,6 +34,23 @@ export default function WorldPage() {
   const [world, setWorld] = useState<WorldDetail | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  /** 递增即重新请求（超时后的「重试」按钮用） */
+  const [reloadToken, setReloadToken] = useState(0);
+  /** 加载超过 4 秒时的提示文案（让用户知道是在等，而不是卡死） */
+  const [slowHint, setSlowHint] = useState("");
+
+  // 加载耗时提示：超过 4 秒给出明确反馈，而不是一直转圈
+  useEffect(() => {
+    if (!loading) {
+      setSlowHint("");
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setSlowHint(`仍在加载…已等待 ${Math.round((Date.now() - startedAt) / 1000)} 秒（网络或服务较慢）`);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [loading]);
   const [inviteRole, setInviteRole] = useState("editor");
   const [inviteCode, setInviteCode] = useState("");
   const [reportOpen, setReportOpen] = useState(false);
@@ -51,7 +68,7 @@ export default function WorldPage() {
       })
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [worldId, session]);
+  }, [worldId, session, reloadToken]);
 
   /** 加入开放编写世界：成功后刷新详情获得编辑身份 */
   const handleJoin = async () => {
@@ -86,10 +103,25 @@ export default function WorldPage() {
   };
 
   if (loading) {
-    return <div className="loading">加载中…</div>;
+    return <div className="loading">{slowHint || "加载中…"}</div>;
   }
   if (error) {
-    return <div className="notice error">{error}</div>;
+    return (
+      <div className="notice error">
+        {error}
+        <button
+          type="button"
+          className="btn ghost small"
+          style={{ marginLeft: 10 }}
+          onClick={() => {
+            setError("");
+            setReloadToken((value) => value + 1);
+          }}
+        >
+          重试
+        </button>
+      </div>
+    );
   }
   if (!world) {
     return <div className="empty">世界不存在</div>;
