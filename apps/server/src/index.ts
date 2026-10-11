@@ -41,6 +41,28 @@ app.route("/api", migrateRoutes);
 // 其余 API 统一解析会话
 app.use("/api/*", sessionMiddleware);
 
+/**
+ * 只读接口的浏览器缓存：画布每次打开都要读世界信息、条目列表与关系图，
+ * 不缓存时每次刷新都要等 Worker + D1（实测 TTFB 可达 2s，冷启动更久）。
+ * 这里给「无副作用」的 GET 响应加 30 秒私有缓存，刷新时直接命中浏览器缓存。
+ * 仅限这些确切路径，写接口与私有数据一律不加。
+ */
+const CACHEABLE_GET_PATHS = [/^\/api\/discover$/, /^\/api\/worlds\/[\w-]+$/, /^\/api\/worlds\/[\w-]+\/(entries|graph|timeline|maps)$/];
+
+app.use("/api/*", async (c, next) => {
+  await next();
+  const isGet = c.req.method === "GET";
+  const cacheable =
+    isGet && c.res.status === 200 && CACHEABLE_GET_PATHS.some((pattern) => pattern.test(new URL(c.req.url).pathname));
+  if (!cacheable) {
+    return;
+  }
+  const headers = new Headers(c.res.headers);
+  // private：只进浏览器缓存不进 CDN；stale-while-revalidate 让刷新先用旧数据顶上
+  headers.set("cache-control", "private, max-age=30, stale-while-revalidate=60");
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers });
+});
+
 app.route("/api", registerRoutes);
 app.route("/api", meRoutes);
 app.route("/api", discoverRoutes);
@@ -60,5 +82,4 @@ app.route("/api/admin", adminRoutes);
 
 /** 健康检查与根路径提示 */
 app.get("/", (c) => c.json({ ok: true, name: "create-world-api" }));
-
 export default app;

@@ -46,6 +46,8 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
   const navigate = useNavigate();
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [frameReady, setFrameReady] = useState(false);
+  /** 是否已经进过画布：没进过就完全不挂载 iframe，避免其它页面白下载 460KB 画布文件 */
+  const [mounted, setMounted] = useState(false);
   const bridgeReadyRef = useRef(false);
   const syncingRef = useRef(false);
   const pendingPayloadRef = useRef<WeavePayload | null>(null);
@@ -422,7 +424,14 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     };
   }, []);
 
-  // iframe 首次加载完成后，桥会自行发 ready；这里只记录 DOM 就绪
+  // 首次进入画布才挂载 iframe；之后常驻不销毁（切页面回来无需重新加载）
+  useEffect(() => {
+    if (active) {
+      setMounted(true);
+    }
+  }, [active]);
+
+  // iframe 加载完成后（桥会自行发 ready），确保当前分类的数据已下发
   useEffect(() => {
     if (!frameReady || !active) {
       return;
@@ -433,12 +442,16 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     }
   }, [active, frameReady, loadCanvas]);
 
+  if (!mounted) {
+    return null;
+  }
+
   return (
     <div className={`canvas-host${active ? " is-active" : ""}`} aria-hidden={!active}>
       <iframe
         ref={frameRef}
         className="canvas-frame"
-        // 带构建版本戳，避免 CDN/浏览器缓存命中旧的画布文件
+        // 带构建版本戳，避免 CDN/浏览器缓存命中旧的画布文件（版本不变时可长期缓存）
         src={`/weave/weave.html?v=${__CANVAS_VERSION__}`}
         title="画布编辑器"
         allow="clipboard-write"

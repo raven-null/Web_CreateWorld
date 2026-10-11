@@ -1,0 +1,26 @@
+# Cloudflare 静态资源缓存策略（Workers Assets 支持 _headers 文件）
+#
+# 背景：/weave/* 与 /assets/* 不经 Worker（wrangler.jsonc 里 run_worker_first 只有 /api/*），
+# 服务端中间件管不到，因此用本文件声明。
+#
+# 注意：规则是**叠加**的（通配规则与具体规则会同时命中并合并 Cache-Control），
+# 所以只能对具体路径写规则，不要出现 `/*` 这种会与其它规则重叠的写法。
+#
+# 画布 URL 由构建期版本戳（?v=…）控制更新：版本不变时长期缓存，构建后自动换新。
+
+/weave/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# 入口 HTML 不带哈希：短缓存，保证部署后能较快拿到新版本
+# （SPA 内部跳转不重新请求 index.html，只有刷新才会走缓存）
+/index.html
+  Cache-Control: public, max-age=60
+
+/diagnose.html
+  Cache-Control: public, max-age=60
+
+/weave/recovery.html
+  Cache-Control: public, max-age=60
