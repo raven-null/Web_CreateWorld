@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { VISIBILITY_LABELS, type WorldSummary } from "@create-world/core";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { formatTime } from "../lib/format";
 
 /**
@@ -14,16 +14,23 @@ export default function DiscoverPage() {
   const [sort, setSort] = useState<"updated" | "created">("updated");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  /** 加载超过 4 秒时给出「较慢/重试中」提示，避免用户以为页面卡死 */
-  const [slowHint, setSlowHint] = useState(false);
+  /** 是否正在展示离线缓存（网络不通时的降级展示） */
+  const [offline, setOffline] = useState(false);
+  /** 递增即触发重新请求（「重试」按钮用） */
+  const [reloadToken, setReloadToken] = useState(0);
+  /** 加载已耗时（秒）：超过阈值就显示出来，让用户知道是「在等」而不是「卡死」 */
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
     if (!loading) {
-      setSlowHint(false);
+      setElapsedSeconds(0);
       return;
     }
-    const timer = window.setTimeout(() => setSlowHint(true), 4000);
-    return () => window.clearTimeout(timer);
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
+    }, 500);
+    return () => window.clearInterval(timer);
   }, [loading]);
 
   // 标签筛选条选项
@@ -33,7 +40,7 @@ export default function DiscoverPage() {
       .catch(() => setTags([]));
   }, []);
 
-  // 世界列表：标签或排序变化时重新拉取
+  // 世界列表：标签或排序变化时重新拉取；网络不通时退化为展示上次缓存并提示
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams({ sort });
@@ -44,10 +51,21 @@ export default function DiscoverPage() {
       .then((data) => {
         setWorlds(data.items);
         setError("");
+        setOffline(false);
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err: unknown) => {
+        const cached = err instanceof ApiError ? (err.cachedData as { items: WorldSummary[] } | undefined) : undefined;
+        if (cached?.items) {
+          // 有上次成功的数据：先展示，标明是离线内容
+          setWorlds(cached.items);
+          setOffline(true);
+          setError("");
+        } else {
+          setError(err instanceof Error ? err.message : "加载失败");
+        }
+      })
       .finally(() => setLoading(false));
-  }, [activeTag, sort]);
+  }, [activeTag, sort, reloadToken]);
 
   return (
     <>
@@ -89,13 +107,30 @@ export default function DiscoverPage() {
         </button>
       </div>
 
-      {error && <div className="notice error">{error}</div>}
-      {loading && (
-        <div className="loading">
-          {slowHint ? "加载较慢，正在重试…（网络或服务波动）" : "加载中…"}
+      {error && (
+        <div className="notice error">
+          {error}
+          <button type="button" className="btn ghost small" style={{ marginLeft: 10 }} onClick={() => setReloadToken((value) => value + 1)}>
+            重试
+          </button>
         </div>
       )}
-      {!loading && worlds.length === 0 && <div className="empty">还没有公开的世界，去创建第一个吧</div>}
+      {offline && (
+        <div className="notice">
+          网络暂时连不上服务器，下面显示的是上次成功加载的内容。
+          <button type="button" className="btn ghost small" style={{ marginLeft: 10 }} onClick={() => setReloadToken((value) => value + 1)}>
+            重新连接
+          </button>
+        </div>
+      )}
+      {loading && (
+        <div className="loading">
+          {elapsedSeconds >= 4
+            ? `正在加载…已等待 ${elapsedSeconds} 秒（网络较慢或连不上，会自动重试一次）`
+            : "加载中…"}
+        </div>
+      )}
+      {!loading && !offline && worlds.length === 0 && <div className="empty">还没有公开的世界，去创建第一个吧</div>}
 
       <div className="card-grid">
         {worlds.map((world) => (

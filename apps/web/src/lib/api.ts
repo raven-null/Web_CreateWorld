@@ -5,30 +5,104 @@ interface ApiResponse<T> {
   error?: string;
 }
 
-/** API 错误：携带 HTTP 状态码与响应 data（用于冲突处理等场景） */
+/** API 错误：携带 HTTP 状态码、响应 data（冲突处理等）与本地缓存兜底数据 */
 export class ApiError extends Error {
   status: number;
   data?: unknown;
+  /** 网络失败时命中的本地缓存（页面可用它降级展示，避免「网络一断就白屏」） */
+  cachedData?: unknown;
 
-  constructor(message: string, status: number, data?: unknown) {
+  constructor(message: string, status: number, data?: unknown, cachedData?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.data = data;
+    this.cachedData = cachedData;
   }
 }
 
 /** GET 请求短缓存时长：减少页面切换时的重复请求 */
 const GET_CACHE_TTL_MS = 10_000;
 
-/** 单次请求超时：没有它，任何一次网络挂起都会让页面永远停在「加载中」且不报错 */
-const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * 单次请求超时。
+ * 取值考虑：网络不通时用户最多等「超时 × (1 + 重试次数)」。
+ * 8 秒 + 一次重试 = 最多约 16 秒，比原先 30 秒更容易等到明确结果。
+ */
+const REQUEST_TIMEOUT_MS = 8_000;
 
 /** 超时或网络抖动时的重试次数（GET 才重试，写操作不重试以免重复提交） */
 const GET_RETRY_TIMES = 1;
 
 /** 超时错误文案 */
-const TIMEOUT_MESSAGE = "请求超时，网络或服务暂时不可用，请重试";
+const TIMEOUT_MESSAGE = "请求超时；网络可能无法访问服务器，稍后会自动重试";
+
+/** 超过该耗时（毫秒）的请求会在控制台留一条警告，便于排查「页面为什么慢」 */
+const SLOW_REQUEST_WARN_MS = 3000;
+
+/** 本地缓存保存时长：网络不通时用于降级展示（跨会话保留） */
+const OFFLINE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** 需要离线兜底的只读接口（路径正则 + 缓存键），写接口一律不缓存 */
+const OFFLINE_CACHEABLE: Array<{ pattern: RegExp; key: string }> = [
+  { pattern: /^\/api\/discover(\?|$)/, key: "discover" },
+  { pattern: /^\/api\/discover\/tags$/, key: "discover-tags" },
+  { pattern: /^\/api\/worlds\/[\w-]+$/, key: "world" },
+  { pattern: /^\/api\/worlds\/[\w-]+\/entries/, key: "world-entries" },
+  { pattern: /^\/api\/worlds\/[\w-]+\/graph$/, key: "world-graph" },
+];
+
+/**
+ * 判断路径是否可离线兜底。
+ * @param path 接口路径
+ * @returns 缓存键；不可缓存返回 null
+ */
+function offlineCacheKey(path: string): string | null {
+  const matched = OFFLINE_CACHEABLE.find((item) => item.pattern.test(path));
+  return matched ? matched.key : null;
+}
+
+/**
+ * 读取离线缓存。
+ * @param path 接口路径
+ * @returns 缓存数据；无缓存或过期返回 null
+ */
+function readOfflineCache(path: string): unknown | null {
+  const key = offlineCacheKey(path);
+  if (!key) {
+    return null;
+  }
+  try {
+    const raw = localStorage.getItem(`create-world:api-cache:${key}`);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as { at: number; data: unknown };
+    if (Date.now() - parsed.at > OFFLINE_CACHE_TTL_MS) {
+      return null;
+    }
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 写入离线缓存（只存最近一次成功的结果）。
+ * @param path 接口路径
+ * @param data 响应数据
+ */
+function writeOfflineCache(path: string, data: unknown): void {
+  const key = offlineCacheKey(path);
+  if (!key) {
+    return;
+  }
+  try {
+    localStorage.setItem(`create-world:api-cache:${key}`, JSON.stringify({ at: Date.now(), data }));
+  } catch {
+    // 隐私模式或容量不足：忽略
+  }
+}
 
 /** GET 缓存：key 为请求路径 */
 const getCache = new Map<string, { at: number; data: unknown }>();
@@ -45,6 +119,7 @@ const inflightGets = new Map<string, Promise<unknown>>();
  * @throws 接口返回 ok:false、超时或网络异常时抛出 ApiError（含中文提示）
  */
 async function requestApi<T>(path: string, options: { method?: string; body?: unknown }): Promise<T> {
+  const startedAt = Date.now();
   let response: Response;
   try {
     response = await fetch(path, {
@@ -57,13 +132,31 @@ async function requestApi<T>(path: string, options: { method?: string; body?: un
   } catch (error) {
     // 超时单独提示，便于判断是「服务慢」还是「完全不可达」
     const timedOut = error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError");
-    throw new ApiError(timedOut ? TIMEOUT_MESSAGE : "网络异常，请检查连接后重试", 0);
+    const elapsed = Date.now() - startedAt;
+    console.warn(`[api] 请求失败 ${path}｜耗时 ${elapsed}ms｜${timedOut ? "超时" : "网络异常"}`);
+    // 网络失败时把本地缓存一并抛出：页面可以退化成「展示上次内容 + 提示离线」
+    const cached = readOfflineCache(path);
+    throw new ApiError(
+      timedOut ? TIMEOUT_MESSAGE : "网络异常，请检查连接后重试",
+      0,
+      undefined,
+      cached ?? undefined,
+    );
   }
 
   const payload = (await response.json().catch(() => null)) as ApiResponse<T> | null;
+
+  // 慢请求埋点：网络或服务端变慢时，控制台能直接看出是哪个请求、慢在哪一段
+  const elapsed = Date.now() - startedAt;
+  if (elapsed >= SLOW_REQUEST_WARN_MS) {
+    console.warn(`[api] 慢请求 ${path}｜耗时 ${elapsed}ms｜状态 ${response.status}`);
+  }
+
   if (!payload || !payload.ok) {
     throw new ApiError(payload?.error ?? `请求失败（${response.status}）`, response.status, payload?.data);
   }
+  // 成功后记录一份离线兜底数据
+  writeOfflineCache(path, payload.data);
   return payload.data as T;
 }
 
