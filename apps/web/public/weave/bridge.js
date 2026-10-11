@@ -503,249 +503,500 @@
   }
 
   /**
-   * 色点标签的存储键。
-   * 结构：{ "#d9534f": "人物", "#3b82f6": "关键人物" }——键是颜色（预设色名或十六进制），值是用户写的说明。
+   * 调色板存储键。
+   * 结构：{ version: 1, custom: ["#eb1471"], hidden: ["blue"], labels: { "#eb1471": "关键人物" } }
+   *   custom —— 自己添加的颜色（预设色不在此列）
+   *   hidden —— 被移除的预设色（预设色是 Weave 的常量，只能在本桥标记隐藏）
+   *   labels —— 每个颜色的说明；没写时用内置的「颜色=分类」对应兜底
    * 与 Weave 自己的偏好键（flow_*）分开存，互不影响。
    */
-  var COLOR_LABEL_KEY = "cw_color_labels";
+  var PALETTE_KEY = "cw_canvas_palette";
 
-  /**
-   * 读取颜色标签表。
-   * @returns {object} 颜色 → 标签
-   */
-  function readColorLabels() {
-    try {
-      var raw = localStorage.getItem(COLOR_LABEL_KEY);
-      var parsed = raw ? JSON.parse(raw) : null;
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch (error) {
-      return {};
-    }
-  }
-
-  /**
-   * 写入/清除某个颜色的标签（空字符串表示删除该条）。
-   * @param {string} color 颜色（预设色名或十六进制）
-   * @param {string} label 标签文案
-   */
-  function writeColorLabel(color, label) {
-    var table = readColorLabels();
-    var trimmed = String(label || "").trim();
-    if (trimmed) {
-      table[color] = trimmed.slice(0, 8);
-    } else {
-      delete table[color];
-    }
-    try {
-      localStorage.setItem(COLOR_LABEL_KEY, JSON.stringify(table));
-    } catch (error) {
-      // 隐私模式等场景下忽略：标签只在本次会话生效
-    }
-  }
+  /** 内置色点：顺序与默认说明 = 人物 / 地点 / 势力 / 物品 / 事件 */
+  var PRESET_DEFS = [
+    { color: CUSTOM_COLOR_HEX, hex: CUSTOM_COLOR_HEX, label: "人物" },
+    { color: "yellow", hex: "#eab308", label: "地点" },
+    { color: "orange", hex: "#f97316", label: "势力" },
+    { color: "cyan", hex: "#06b6d4", label: "物品" },
+    { color: "green", hex: "#10b981", label: "事件" },
+  ];
 
   /** 预设色的中文名（与 Weave 词典一致，用于给它的调色板补标签） */
   var COLOR_NAME_ZH = { blue: "蓝色", cyan: "青色", green: "绿色", yellow: "黄色", orange: "橙色" };
 
+  /** 是否是合法的十六进制颜色 */
+  function isHexColor(value) {
+    return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+  }
+
   /**
-   * 取某个颜色显示用的标签。
-   * 优先级：用户写的标签 → 内置的「颜色=分类」对应 → Weave 的色名。
+   * 读取调色板配置（缺失或损坏时返回空结构）。
+   * @returns {{version: number, custom: string[], hidden: string[], labels: object}}
+   */
+  function readPalette() {
+    try {
+      var raw = localStorage.getItem(PALETTE_KEY);
+      var parsed = raw ? JSON.parse(raw) : null;
+      if (!parsed || typeof parsed !== "object") {
+        return { version: 1, custom: [], hidden: [], labels: {} };
+      }
+      return {
+        version: 1,
+        custom: Array.isArray(parsed.custom) ? parsed.custom.filter(isHexColor) : [],
+        hidden: Array.isArray(parsed.hidden) ? parsed.hidden : [],
+        labels: parsed.labels && typeof parsed.labels === "object" ? parsed.labels : {},
+      };
+    } catch (error) {
+      return { version: 1, custom: [], hidden: [], labels: {} };
+    }
+  }
+
+  /**
+   * 写入调色板配置。
+   * @param {object} palette 配置
+   */
+  function writePalette(palette) {
+    try {
+      localStorage.setItem(PALETTE_KEY, JSON.stringify(palette));
+    } catch (error) {
+      // 隐私模式等场景下忽略：改动只在本次会话有效
+    }
+  }
+
+  /**
+   * 取某个颜色显示用的说明。
+   * 优先级：用户写的说明 → 内置的「颜色=分类」对应 → Weave 的色名。
    * @param {string} color 颜色（预设色名或十六进制）
-   * @returns {string} 标签文案
+   * @returns {string} 说明文案
    */
   function labelForColor(color) {
-    var custom = readColorLabels()[color];
+    var custom = readPalette().labels[color];
     if (custom) {
       return custom;
     }
-    if (color === CUSTOM_COLOR_HEX || color === "red") {
-      return COLOR_CATEGORY.red;
+    for (var i = 0; i < PRESET_DEFS.length; i += 1) {
+      if (PRESET_DEFS[i].color === color) {
+        return PRESET_DEFS[i].label;
+      }
     }
-    if (COLOR_CATEGORY[color]) {
-      return COLOR_CATEGORY[color];
+    if (color === "red" || color === CUSTOM_COLOR_HEX) {
+      return "人物";
     }
     return COLOR_NAME_ZH[color] || "";
   }
 
-  /** 标签行的编辑态：非空时该颜色的标签正在被输入框编辑 */
-  var editingLabelColor = null;
-
-  /** 标签编辑输入框的 id */
-  var LABEL_INPUT_ID = "bridgeLabelInput";
-
-  /** 关闭标签编辑态（不改数据） */
-  function closeLabelEditor() {
-    editingLabelColor = null;
-    buildColorDots();
+  /**
+   * 取颜色的实际色值（用于渲染色点与小圆点）。
+   * @param {string} color 预设色名或十六进制
+   * @returns {string} 十六进制色值
+   */
+  function hexForColor(color) {
+    for (var i = 0; i < PRESET_DEFS.length; i += 1) {
+      if (PRESET_DEFS[i].color === color) {
+        return PRESET_DEFS[i].hex;
+      }
+    }
+    return isHexColor(color) ? color : "#8a8378";
   }
 
   /**
-   * 提交标签编辑。
-   * @param {string} color 颜色
-   * @param {string} value 新标签
+   * 取当前要展示的颜色列表（隐藏的不出现）。
+   * @returns {Array<{color: string, hex: string, label: string, custom: boolean}>}
    */
-  function commitLabel(color, value) {
-    if (editingLabelColor !== color) {
+  function paletteItems() {
+    var palette = readPalette();
+    var items = [];
+    for (var i = 0; i < PRESET_DEFS.length; i += 1) {
+      var preset = PRESET_DEFS[i];
+      if (palette.hidden.indexOf(preset.color) >= 0) {
+        continue;
+      }
+      items.push({
+        color: preset.color,
+        hex: preset.hex,
+        label: palette.labels[preset.color] || preset.label,
+        custom: false,
+      });
+    }
+    for (var j = 0; j < palette.custom.length; j += 1) {
+      var color = palette.custom[j];
+      if (palette.hidden.indexOf(color) >= 0) {
+        continue;
+      }
+      items.push({ color: color, hex: color, label: palette.labels[color] || color, custom: true });
+    }
+    return items;
+  }
+
+  /**
+   * 添加一个颜色（已在列表中则只更新说明并取消隐藏）。
+   * 自选色会同时写进 Weave 的自选色列表，使「新节点默认色」的色板里也有它。
+   * @param {string} color 预设色名或十六进制
+   * @param {string} label 说明（可空）
+   * @returns {boolean} 是否添加成功
+   */
+  function addPaletteColor(color, label) {
+    var palette = readPalette();
+    var isPreset = PRESET_DEFS.some(function (item) {
+      return item.color === color;
+    });
+    if (!isPreset) {
+      if (!isHexColor(color)) {
+        return false;
+      }
+      if (palette.custom.indexOf(color) < 0) {
+        palette.custom.push(color);
+      }
+      if (Array.isArray(App._customColors) && App._customColors.indexOf(color) < 0) {
+        App._customColors.push(color);
+        if (App._customColors.length > 4) {
+          App._customColors.shift();
+        }
+        if (typeof App._saveCustomColors === "function") {
+          App._saveCustomColors();
+        }
+      }
+    }
+    palette.hidden = palette.hidden.filter(function (item) {
+      return item !== color;
+    });
+    if (label) {
+      palette.labels[color] = String(label).trim().slice(0, 10);
+    }
+    writePalette(palette);
+    return true;
+  }
+
+  /**
+   * 移除一个颜色。
+   * 预设色不能从 Weave 的常量里删，只能标记隐藏；自己添加的颜色则真正删除，
+   * 并同步 Weave 的自选色列表。
+   * @param {string} color 颜色
+   */
+  function removePaletteColor(color) {
+    var palette = readPalette();
+    var isPreset = PRESET_DEFS.some(function (item) {
+      return item.color === color;
+    });
+    if (isPreset) {
+      if (palette.hidden.indexOf(color) < 0) {
+        palette.hidden.push(color);
+      }
+    } else {
+      palette.custom = palette.custom.filter(function (item) {
+        return item !== color;
+      });
+      if (Array.isArray(App._customColors)) {
+        var index = App._customColors.indexOf(color);
+        if (index >= 0) {
+          App._customColors.splice(index, 1);
+          if (typeof App._saveCustomColors === "function") {
+            App._saveCustomColors();
+          }
+        }
+      }
+    }
+    delete palette.labels[color];
+    writePalette(palette);
+  }
+
+  /** 颜色面板状态：mode = none（收起）/ add（添加颜色）/ edit（改某个颜色的说明） */
+  var palettePanel = { mode: "none", editColor: "" };
+
+  /** 面板容器 id */
+  var PALETTE_PANEL_ID = "bridgePalettePanel";
+
+  /** 取面板容器（不存在则建在色点行下方），失败返回 null */
+  function ensurePalettePanel() {
+    var panel = document.getElementById(PALETTE_PANEL_ID);
+    if (panel) {
+      return panel;
+    }
+    var anchor = document.getElementById(COLOR_DOTS_ID);
+    if (!anchor || !anchor.parentNode) {
+      return null;
+    }
+    panel = document.createElement("div");
+    panel.id = PALETTE_PANEL_ID;
+    panel.className = "bridge-palette-panel";
+    panel.style.display = "none";
+    anchor.parentNode.appendChild(panel);
+    return panel;
+  }
+
+  /** HTML 属性转义（说明是用户输入，直接拼进 value 会破坏结构） */
+  function escapeAttr(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  /** 重绘面板内容（添加 / 编辑 / 收起） */
+  function renderPalettePanel() {
+    var panel = ensurePalettePanel();
+    if (!panel) {
       return;
     }
-    editingLabelColor = null;
-    writeColorLabel(color, value);
-    buildColorDots();
-  }
-
-  /**
-   * 在色点下方就地打开标签输入框。
-   * 用输入框而不是 prompt：iframe 里的原生弹窗容易被浏览器拦截，且这里就地编辑更直观。
-   * @param {string} color 颜色
-   */
-  function openLabelEditor(color) {
-    editingLabelColor = color;
-    buildColorDots();
-    var input = document.getElementById(LABEL_INPUT_ID);
-    if (!input) {
-      editingLabelColor = null;
+    if (palettePanel.mode === "none") {
+      panel.style.display = "none";
+      panel.innerHTML = "";
       return;
     }
-    input.focus();
-    input.select();
+
+    var editing = palettePanel.mode === "edit";
+    var editingHex = editing ? hexForColor(palettePanel.editColor) : "#eb1471";
+    var editingLabel = editing ? labelForColor(palettePanel.editColor) : "";
+    var swatches = paletteItems()
+      .map(function (item) {
+        var active = editing && item.color === palettePanel.editColor ? " is-active" : "";
+        return (
+          '<button type="button" class="bridge-swatch' +
+          active +
+          '" data-color="' +
+          item.color +
+          '" style="background:' +
+          item.hex +
+          '" title="' +
+          escapeAttr(item.label) +
+          '"></button>'
+        );
+      })
+      .join("");
+
+    panel.innerHTML =
+      '<div class="bridge-palette-row">' +
+      '<span class="bridge-palette-tip">设置颜色</span>' +
+      '<input type="color" class="bridge-palette-color" id="bridgePaletteColor" value="' +
+      editingHex +
+      '" />' +
+      '<input type="text" class="bridge-palette-text" id="bridgePaletteLabel" maxlength="10" placeholder="它代表什么，如：关键人物" value="' +
+      escapeAttr(editingLabel) +
+      '" />' +
+      '<button type="button" class="bridge-palette-btn primary" id="bridgePaletteSave">' +
+      (editing ? "保存" : "添加") +
+      "</button>" +
+      (editing ? '<button type="button" class="bridge-palette-btn danger" id="bridgePaletteDelete">移除</button>' : "") +
+      '<button type="button" class="bridge-palette-btn" id="bridgePaletteCancel">取消</button>' +
+      "</div>" +
+      (editing
+        ? ""
+        : '<div class="bridge-palette-swatches"><span class="bridge-palette-tip">或点一个已有颜色改说明</span>' +
+          swatches +
+          "</div>");
+    panel.style.display = "block";
+
+    var textInput = document.getElementById("bridgePaletteLabel");
+    if (textInput) {
+      textInput.focus();
+      textInput.select();
+    }
+  }
+
+  /** 收起面板 */
+  function closePalettePanel() {
+    palettePanel.mode = "none";
+    palettePanel.editColor = "";
+    renderPalettePanel();
+  }
+
+  /** 打开「添加颜色」面板（颜色与说明一起填） */
+  function openAddColorPanel() {
+    palettePanel.mode = "add";
+    palettePanel.editColor = "";
+    renderPalettePanel();
+  }
+
+  /** 打开「改说明」面板 */
+  function openEditColorPanel(color) {
+    palettePanel.mode = "edit";
+    palettePanel.editColor = color;
+    renderPalettePanel();
+  }
+
+  /** 保存面板（添加或改说明） */
+  function savePalettePanel() {
+    var colorInput = document.getElementById("bridgePaletteColor");
+    var labelInput = document.getElementById("bridgePaletteLabel");
+    var color = palettePanel.mode === "edit" ? palettePanel.editColor : colorInput ? colorInput.value : "";
+    var label = labelInput ? labelInput.value : "";
+    if (!color) {
+      return;
+    }
+    addPaletteColor(color, label);
+    closePalettePanel();
+    buildColorDots();
+  }
+
+  /** 移除当前编辑的颜色 */
+  function deletePaletteColor() {
+    if (palettePanel.mode !== "edit" || !palettePanel.editColor) {
+      return;
+    }
+    removePaletteColor(palettePanel.editColor);
+    closePalettePanel();
+    buildColorDots();
+  }
+
+  /** 面板内的事件委托（面板内容每次重渲染，绑在容器上更稳） */
+  function bindPalettePanelEvents() {
+    var panel = ensurePalettePanel();
+    if (!panel) {
+      return;
+    }
+    panel.onclick = function (event) {
+      var target = event.target;
+      if (!target || !target.closest) {
+        return;
+      }
+      if (target.closest("#bridgePaletteSave")) {
+        savePalettePanel();
+        return;
+      }
+      if (target.closest("#bridgePaletteDelete")) {
+        deletePaletteColor();
+        return;
+      }
+      if (target.closest("#bridgePaletteCancel")) {
+        closePalettePanel();
+        return;
+      }
+      var swatch = target.closest(".bridge-swatch");
+      if (swatch) {
+        openEditColorPanel(swatch.dataset.color);
+      }
+    };
+    panel.onkeydown = function (event) {
+      // 输入框里的按键不要冒泡到 Weave（否则会触发它的快捷键）
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        savePalettePanel();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closePalettePanel();
+      }
+    };
   }
 
   /**
-   * 在顶栏平铺一排色点：每个色点代表一个分类，标签可以自己写。
+   * 取「写在颜色块上的文字」该用什么颜色：按背景亮度选黑/白，保证看得清。
+   * @param {string} hex 十六进制色值
+   * @returns {string} 文字颜色
+   */
+  function textColorOn(hex) {
+    if (!isHexColor(hex)) {
+      return "#e8e0d3";
+    }
+    var r = parseInt(hex.slice(1, 3), 16);
+    var g = parseInt(hex.slice(3, 5), 16);
+    var b = parseInt(hex.slice(5, 7), 16);
+    var luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.62 ? "#1c1915" : "#ffffff";
+  }
+
+  /**
+   * 重绘顶栏调色板：颜色即分类——说明文字直接写在颜色块里，可增删。
    *
-   * 这里**不调用 Weave 的 _buildDotPanel**——它生成的类名是「前缀 + '-dot'」，
-   * 且内部只有 5 个预设色（没有红色），配色顺序也不适合顶栏。改为自己生成：
-   * 类名 `.bridge-dot` 与注入的样式完全对应；点击后仍调用 Weave 的 `_setGenColor`，
-   * 选色状态与偏好存储照旧由 Weave 维护。
+   * 自己生成而不是用 Weave 的 `_buildDotPanel`：它把类名拼成「前缀 + '-dot'」
+   * （传 'bridge-' 会得到 `bridge--dot`，与样式对不上），且只含 5 个固定颜色、无法增删。
+   * 选色仍调用 Weave 的 `_setGenColor`，默认色与偏好存储照旧由它维护。
    */
   function buildColorDots() {
     var container = document.getElementById(COLOR_DOTS_ID);
     if (!container) {
       return;
     }
-
-    /** 色点定义：顺序 = 分类顺序（人物 / 地点 / 势力 / 物品 / 事件） */
-    var DOT_DEFS = [
-      { color: CUSTOM_COLOR_HEX, hex: CUSTOM_COLOR_HEX },
-      { color: "yellow", hex: "#eab308" },
-      { color: "orange", hex: "#f97316" },
-      { color: "cyan", hex: "#06b6d4" },
-      { color: "green", hex: "#10b981" },
-    ];
-
+    var items = paletteItems();
+    var activeColor = App._selectedGenColor;
     container.innerHTML = "";
 
-    // 自选的额外颜色（用户自己加过的颜色也一并列出，并允许写标签）
-    var custom = Array.isArray(App._customColors) ? App._customColors : [];
-    for (var j = 0; j < custom.length; j += 1) {
-      if (custom[j] !== CUSTOM_COLOR_HEX) {
-        DOT_DEFS.push({ color: custom[j], hex: custom[j] });
-      }
+    for (var i = 0; i < items.length; i += 1) {
+      var item = items[i];
+      var isActive = item.color === activeColor;
+
+      // 整个胶囊就是按钮：底色 = 颜色，说明文字写在里面
+      var pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = "bridge-pill" + (isActive ? " is-active" : "");
+      pill.dataset.c = item.color;
+      pill.style.background = item.hex;
+      pill.style.color = textColorOn(item.hex);
+      pill.title = item.label + "（" + item.color + "）　双击改说明";
+
+      var label = document.createElement("span");
+      label.className = "bridge-pill-label";
+      label.textContent = item.label;
+      pill.appendChild(label);
+
+      var remove = document.createElement("span");
+      remove.className = "bridge-pill-remove";
+      remove.title = "移除「" + item.label + "」";
+      remove.setAttribute("role", "button");
+      remove.setAttribute("aria-label", "移除 " + item.label);
+      remove.textContent = "×";
+      pill.appendChild(remove);
+
+      container.appendChild(pill);
     }
 
-    for (var i = 0; i < DOT_DEFS.length; i += 1) {
-      var def = DOT_DEFS[i];
-      var label = labelForColor(def.color);
-
-      if (editingLabelColor === def.color) {
-        // 编辑态：色点下方换成输入框
-        var wrapper = document.createElement("span");
-        wrapper.className = "bridge-dot-edit";
-        var preview = document.createElement("span");
-        preview.className = "bridge-dot-preview";
-        preview.style.background = def.hex;
-        var input = document.createElement("input");
-        input.id = LABEL_INPUT_ID;
-        input.type = "text";
-        input.className = "bridge-label-input";
-        input.maxLength = 8;
-        input.value = readColorLabels()[def.color] || label;
-        input.placeholder = "写个说明";
-        input.addEventListener("keydown", function (event) {
-          event.stopPropagation();
-          if (event.key === "Enter") {
-            event.preventDefault();
-            event.target.blur();
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            closeLabelEditor();
-          }
-        });
-        input.addEventListener("blur", function (event) {
-          commitLabel(def.color, event.target.value);
-        });
-        wrapper.appendChild(preview);
-        wrapper.appendChild(input);
-        container.appendChild(wrapper);
-        continue;
-      }
-
-      var dot = document.createElement("button");
-      dot.type = "button";
-      dot.className = "bridge-dot";
-      dot.dataset.c = def.color;
-      if (label) {
-        dot.dataset.cwLabel = label;
-      }
-      dot.style.background = def.hex;
-      dot.title = (label ? label + "（" : "") + def.color + (label ? "）" : "") + "　双击可改说明";
-      dot.setAttribute("aria-label", label || def.color);
-      if (def.color === App._selectedGenColor) {
-        dot.classList.add("active");
-      }
-      container.appendChild(dot);
-    }
-
-    // 自选色入口
-    var wheel = document.createElement("button");
-    wheel.type = "button";
-    wheel.className = "bridge-wheel";
-    wheel.title = "自选颜色";
-    wheel.innerHTML =
-      '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"' +
+    // 「+ 添加」：添加颜色时可以同时写说明
+    var add = document.createElement("button");
+    add.type = "button";
+    add.className = "bridge-add";
+    add.title = "添加颜色（可同时写它代表什么）";
+    add.innerHTML =
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2"' +
       ' stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line>' +
-      '<line x1="5" y1="12" x2="19" y2="12"></line></svg>';
-    wheel.addEventListener("click", function () {
-      App._gOpenCustomPicker();
-      // 选定后重建色点行（新颜色会出现在里面）
-      window.setTimeout(function () {
-        buildColorDots();
-      }, 500);
-    });
-    container.appendChild(wheel);
+      '<line x1="5" y1="12" x2="19" y2="12"></line></svg>添加';
+    container.appendChild(add);
 
-    // 统一用事件委托接点击：色点是动态重建的，逐个绑定容易漏
+    // 事件委托：胶囊会随增删重建，逐个绑定容易漏
     container.onclick = function (event) {
       var target = event.target;
-      var button = target && target.closest ? target.closest(".bridge-dot") : null;
-      if (!button) {
+      if (!target || !target.closest) {
         return;
       }
-      // 编辑标签时点击色点不切换颜色，避免误改默认色
-      if (editingLabelColor !== null) {
+      // 移除按钮优先于选色
+      var removeButton = target.closest(".bridge-pill-remove");
+      if (removeButton) {
+        event.stopPropagation();
+        var pillToRemove = removeButton.closest(".bridge-pill");
+        if (pillToRemove) {
+          removePaletteColor(pillToRemove.dataset.c);
+          buildColorDots();
+        }
         return;
       }
-      var next = button.dataset.c;
-      App._setGenColor(next);
-      var all = container.querySelectorAll(".bridge-dot");
-      for (var k = 0; k < all.length; k += 1) {
-        all[k].classList.toggle("active", all[k] === button);
+      if (target.closest(".bridge-add")) {
+        openAddColorPanel();
+        return;
       }
-      updateCurrentColor(next);
+      var pill = target.closest(".bridge-pill");
+      if (pill) {
+        // 单击 = 选这个颜色（新节点的默认色）
+        App._setGenColor(pill.dataset.c);
+        updateCurrentColor(pill.dataset.c);
+        var all = container.querySelectorAll(".bridge-pill");
+        for (var k = 0; k < all.length; k += 1) {
+          all[k].classList.toggle("is-active", all[k].dataset.c === pill.dataset.c);
+        }
+      }
     };
 
-    // 双击色点 → 就地改它的说明
+    // 双击胶囊 = 改说明（与单击选色不冲突）
     container.ondblclick = function (event) {
-      var target = event.target;
-      var button = target && target.closest ? target.closest(".bridge-dot") : null;
-      if (!button || editingLabelColor !== null) {
+      var pill = event.target && event.target.closest ? event.target.closest(".bridge-pill") : null;
+      if (!pill) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      openLabelEditor(button.dataset.c);
+      openEditColorPanel(pill.dataset.c);
     };
 
-    updateCurrentColor(App._selectedGenColor);
+    updateCurrentColor(activeColor);
   }
 
   /** 刷新「当前颜色」小圆点的颜色 */
@@ -754,81 +1005,19 @@
     if (!dot) {
       return;
     }
-    var hex = typeof App._resolveColor === "function" ? App._resolveColor(color).hex : color;
-    dot.style.background = hex;
-  }
-
-  // ---------- 颜色 ↔ 分类：在调色板圆点上标出每个颜色代表什么 ----------
-
-  /** 圆点容器的选择器（内置调色板与详情弹窗共用同一套圆点 class） */
-  var DOT_CONTAINER_SELECTORS = ["#gColorDots", "#mColors"];
-
-  /**
-   * 给一个调色板圆点写入分类名称。
-   * @param {HTMLElement} dot 圆点按钮（data-c 为颜色）
-   */
-  function labelDot(dot) {
-    var color = dot.dataset ? dot.dataset.c : "";
-    // 用同一套标签解析：优先用户为这个颜色写的说明
-    var category = labelForColor(color);
-    if (!category) {
-      return;
-    }
-    // 用 CSS 伪元素显示，不动圆点自身内容与事件
-    dot.setAttribute("data-cw-label", category);
-    dot.title = category + "（" + color + "）";
-  }
-
-  /** 给页面上所有调色板圆点补上分类名称 */
-  function applyColorLabels() {
-    for (var i = 0; i < DOT_CONTAINER_SELECTORS.length; i += 1) {
-      var container = document.querySelector(DOT_CONTAINER_SELECTORS[i]);
-      if (!container) {
-        continue;
-      }
-      var dots = container.querySelectorAll("[data-c]");
-      for (var j = 0; j < dots.length; j += 1) {
-        // 自定义红的 data-c 是十六进制，labelForColor 也认它
-        labelDot(dots[j]);
-      }
-    }
+    dot.style.background = hexForColor(color);
   }
 
   /**
-   * 启动颜色标注：先标一次，并监听容器变化。
-   * Weave 每次打开颜色面板都会重建圆点，因此用 MutationObserver 在重建后补标。
+   * 节点配色样式：自定义色（红）没有 h-<色名> class，用 data-cw-color 属性选择器补上，
+   * 让它和预设色一样有正确的头部渐变、边框与 socket 描边。
    */
-  function startColorLabels() {
-    applyColorLabels();
-    for (var i = 0; i < DOT_CONTAINER_SELECTORS.length; i += 1) {
-      var container = document.querySelector(DOT_CONTAINER_SELECTORS[i]);
-      if (!container) {
-        continue;
-      }
-      var observer = new MutationObserver(applyColorLabels);
-      observer.observe(container, { childList: true });
-    }
-  }
-
-  /**
-   * 颜色调色板的额外样式：圆点下方显示分类名，并调整间距容纳文字。
-   * 圆点保持原样，只是多一行标签——用户一眼能看出「什么颜色=什么定位」。
-   */
-  function injectColorLabelStyle() {
+  function injectNodeColorStyle() {
     var style = document.createElement("style");
-    style.id = "bridgeColorLabelStyle";
+    style.id = "bridgeNodeColorStyle";
     var red = CUSTOM_COLOR_HEX;
     var redDark = CUSTOM_COLOR_DARK;
     style.textContent = [
-      // 面板加宽并让圆点排布留出标签空间（详情弹窗里的调色板仍用它）
-      "#genColorPanel .g-dot-wrap{gap:10px 8px !important;max-width:290px;margin-bottom:16px}",
-      "#genColorPanel .g-dot{width:26px;height:26px}",
-      // 色点下方的分类标签：绝对定位在圆点下方，不改变圆点尺寸与点击区域
-      "[data-cw-label]{position:relative}",
-      "[data-cw-label]::after{content:attr(data-cw-label);position:absolute;left:50%;top:100%;",
-      "transform:translateX(-50%);margin-top:4px;font-size:10px;line-height:1;color:var(--text-secondary);",
-      "white-space:nowrap;pointer-events:none}",
-      // 自定义色（红色）也要能被认出：预设色有 h-<色名> class，红色没有
       '.node[data-cw-color="' + red + '"] .node-header{background:linear-gradient(135deg,' + red + "," + redDark + ");",
       "text-shadow:0 1px 3px rgba(0,0,0,.35)}",
       '.node[data-cw-color="' + red + '"] .node-body{border-color:' + red + "}",
@@ -854,35 +1043,54 @@
       ".header{display:flex !important;align-items:center !important;justify-content:flex-start !important;",
       "gap:14px !important;padding:0 16px !important}",
       ".header .header-brand{display:none !important}",
-      // 颜色组：标题 → 当前色 → 平铺色点 → 自选色
+      // 调色板：文字直接写在颜色块里（彩色胶囊），颜色即分类名
       ".bridge-color{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0}",
-      ".bridge-color-label{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);",
+      ".bridge-color-label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);",
       "white-space:nowrap;flex-shrink:0}",
       ".bridge-current-dot{width:10px;height:10px;border-radius:50%;display:inline-block;",
       "box-shadow:0 0 0 1px rgba(255,255,255,.18)}",
-      // 色点行：圆点小一档，下方留出标签的位置（padding-bottom 让整行在 56px 顶栏里垂直居中）
-      ".bridge-color-dots{display:flex;align-items:center;gap:14px;padding-bottom:12px}",
-      ".bridge-color-dots .bridge-dot{width:18px;height:18px;border-radius:50%;border:2px solid transparent;",
-      "cursor:pointer;padding:0;position:relative;flex-shrink:0;transition:transform .15s,box-shadow .15s}",
-      ".bridge-color-dots .bridge-dot:hover{transform:scale(1.18)}",
-      ".bridge-color-dots .bridge-dot.active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.45)}",
-      ".bridge-color-dots .bridge-dot[data-cw-label]::after{content:attr(data-cw-label);position:absolute;",
-      "left:50%;top:100%;transform:translateX(-50%);margin-top:4px;font-size:9.5px;line-height:1;",
-      "color:var(--text-faint);white-space:nowrap;pointer-events:none}",
-      // 标签编辑态：色点下方换成输入框
-      ".bridge-dot-edit{display:inline-flex;align-items:center;justify-content:center;position:relative;",
-      "padding-bottom:12px}",
-      ".bridge-dot-preview{width:18px;height:18px;border-radius:50%;display:block;",
-      "box-shadow:0 0 0 2px rgba(201,161,92,.6)}",
-      // 输入框浮在色点行下方、横跨整行，避免被色点行挤窄
-      ".bridge-label-input{position:absolute;top:20px;left:50%;transform:translateX(-50%);width:104px;",
-      "z-index:20;background:var(--bg-input);border:1px solid var(--accent);border-radius:4px;",
-      "color:var(--text-primary);font-family:inherit;font-size:11px;line-height:1.4;padding:2px 6px;",
-      "text-align:center;outline:none}",
-      ".bridge-wheel{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;",
-      "justify-content:center;cursor:pointer;background:var(--bg-input);border:1px solid var(--border);",
-      "color:var(--text-secondary);padding:0;flex-shrink:0}",
-      ".bridge-wheel:hover{color:var(--accent);border-color:var(--accent)}",
+      ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:hidden;",
+      "scrollbar-width:none;padding:2px 0}",
+      ".bridge-color-dots::-webkit-scrollbar{display:none}",
+      // 一个颜色 = 一个胶囊：底色是颜色，说明文字写在里面
+      ".bridge-pill{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;border-radius:999px;",
+      "border:2px solid transparent;padding:4px 8px 5px 12px;font-family:inherit;font-size:13px;font-weight:600;",
+      "line-height:1.2;letter-spacing:.2px;cursor:pointer;text-shadow:0 1px 2px rgba(0,0,0,.35);",
+      "transition:box-shadow .15s,transform .15s}",
+      ".bridge-pill:hover{transform:translateY(-1px)}",
+      ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.5)}",
+      ".bridge-pill-label{white-space:nowrap;pointer-events:none}",
+      ".bridge-pill-remove{width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;",
+      "justify-content:center;font-size:14px;font-weight:400;line-height:1;opacity:.6;cursor:pointer;",
+      "background:rgba(0,0,0,.18);transition:opacity .15s,background .15s}",
+      ".bridge-pill-remove:hover{opacity:1;background:rgba(0,0,0,.45)}",
+      ".bridge-add{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 12px;border-radius:999px;",
+      "border:1px dashed var(--border-light);background:transparent;color:var(--text-secondary);font-family:inherit;",
+      "font-size:12px;cursor:pointer;flex-shrink:0;transition:color .15s,border-color .15s}",
+      ".bridge-add:hover{color:var(--accent);border-color:var(--accent)}",
+      // 颜色设置面板（添加 / 改说明），浮在顶栏下方
+      ".bridge-palette-panel{position:absolute;top:100%;left:0;right:0;z-index:120;background:var(--bg-card);",
+      "border-bottom:1px solid var(--border);padding:10px 16px 12px;box-shadow:var(--shadow-md)}",
+      ".bridge-palette-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}",
+      ".bridge-palette-tip{font-size:12px;color:var(--text-secondary);white-space:nowrap}",
+      ".bridge-palette-color{width:36px;height:26px;padding:0;border:1px solid var(--border);border-radius:4px;",
+      "background:var(--bg-input);cursor:pointer}",
+      ".bridge-palette-text{flex:1 1 220px;min-width:160px;max-width:320px;background:var(--bg-input);",
+      "border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-family:inherit;",
+      "font-size:13px;padding:5px 10px;outline:none}",
+      ".bridge-palette-text:focus{border-color:var(--accent)}",
+      ".bridge-palette-btn{height:28px;padding:0 14px;border-radius:6px;border:1px solid var(--border);",
+      "background:var(--bg-input);color:var(--text-secondary);font-family:inherit;font-size:12px;cursor:pointer}",
+      ".bridge-palette-btn:hover{color:var(--text-primary);border-color:var(--border-light)}",
+      ".bridge-palette-btn.primary{background:var(--accent);border-color:var(--accent);color:#14120f;font-weight:600}",
+      ".bridge-palette-btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}",
+      ".bridge-palette-btn.danger:hover{color:#e07a6a;border-color:#e07a6a}",
+      ".bridge-palette-swatches{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}",
+      ".bridge-swatch{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;",
+      "transition:transform .15s,border-color .15s}",
+      ".bridge-swatch:hover{transform:scale(1.15)}",
+      ".bridge-swatch.is-active{border-color:var(--accent)}",
+      ".bridge-color-dots [data-cw-label]::after{font-size:9.5px;margin-top:3px;color:var(--text-faint)}",
       // 操作按钮组靠右
       ".header .bridge-actions{margin-left:auto}",
       // 统计徽章贴最右
@@ -1093,10 +1301,10 @@
     mountUi();
     rebuildHeader();
     buildColorDots();
+    bindPalettePanelEvents();
     startNodeColorSync();
-    injectColorLabelStyle();
+    injectNodeColorStyle();
     injectHeaderStyle();
-    startColorLabels();
     startGridToggle();
     log("桥已启动，等待父页面下发数据");
     loadingTimer = setTimeout(function () {
