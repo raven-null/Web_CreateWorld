@@ -57,7 +57,7 @@ const EDGE_CACHED_PATH_PATTERNS = [
   /^\/api\/worlds\/[\w-]+$/,
   /^\/api\/worlds\/[\w-]+\/(entries|graph)$/,
 ];
-const EDGE_CACHE_TTL_SECONDS = 60;
+const EDGE_CACHE_TTL_SECONDS = 30;
 
 /** 判定某个 GET 请求是否可以走边缘缓存 */
 function isEdgeCacheable(pathname: string): boolean {
@@ -87,27 +87,67 @@ function stripVisitorFields(payload: unknown): unknown {
   return { ...record, data };
 }
 
+/**
+ * 边缘缓存 + 权限注入（合并为一个中间件）。
+ *
+ * 为什么合并：先写成「缓存中间件 + 后面的权限注入中间件」两个，但实测缓存命中时
+ * 后续中间件不会被执行（响应已由缓存直接产出），权限注入因此从未生效——登录用户被当成只读。
+ * 合并后顺序完全在内部掌握：
+ *   命中缓存 → 用缓存的公共数据 + **按当前访客实时算出的权限** 组装响应
+ *   未命中   → 交给后续路由，再把结果去掉访客字段写入缓存
+ */
 app.use("/api/*", async (c, next) => {
   const url = new URL(c.req.url);
-  const eligible = c.req.method === "GET" && isEdgeCacheable(url.pathname);
-  if (!eligible || typeof caches === "undefined") {
-    await next();
-    return;
-  }
+  /** 命中缓存时携带的公共数据（与身份无关） */
+  let cachedPublic: Record<string, unknown> | null = null;
+  let cacheKey: Request | null = null;
 
-  const cacheKey = new Request(url.toString(), { method: "GET" });
-  const hit = await caches.default.match(cacheKey);
-  if (hit) {
-    // 命中缓存：把公共内容直接交给前端；权限字段随后由权限注入中间件补齐
-    const headers = new Headers(hit.headers);
-    headers.set("x-edge-cache", "hit");
-    c.res = new Response(hit.body, { status: 200, headers });
-    return;
+  if (c.req.method === "GET" && isEdgeCacheable(url.pathname) && typeof caches !== "undefined") {
+    cacheKey = new Request(url.toString(), { method: "GET" });
+    const hit = await caches.default.match(cacheKey);
+    if (hit) {
+      try {
+        const body = (await hit.clone().json()) as { data?: Record<string, unknown> };
+        cachedPublic = body?.data ?? null;
+      } catch {
+        cachedPublic = null;
+      }
+    }
   }
 
   await next();
 
-  // 只缓存成功响应；带 Set-Cookie 的（登录态）绝不写入共享缓存
+  // 权限字段：按当前访客实时计算，绝不来自缓存
+  const isWorldInfo = /^\/api\/worlds\/[\w-]+$/.test(url.pathname);
+  if (cachedPublic) {
+    const payload: Record<string, unknown> = { ok: true, data: { ...cachedPublic } };
+    if (isWorldInfo) {
+      try {
+        const worldId = url.pathname.split("/").pop() ?? "";
+        const userId = c.get("user")?.id ?? null;
+        const access = await loadWorldAccess(c.env.DB, worldId, userId);
+        const data = payload.data as Record<string, unknown>;
+        data.myRole = access?.role ?? null;
+        data.canEdit = Boolean(access && canEdit(access, userId) && !access.banned);
+      } catch {
+        // 权限计算失败就退化为只读展示，避免误判为可编辑
+        const data = payload.data as Record<string, unknown>;
+        data.myRole = null;
+        data.canEdit = false;
+      }
+    }
+    const headers = new Headers(c.res.headers);
+    headers.set("content-type", "application/json; charset=utf-8");
+    headers.set("x-edge-cache", "hit");
+    c.res = new Response(JSON.stringify(payload), { status: 200, headers });
+    return;
+  }
+
+  if (!cacheKey) {
+    return;
+  }
+
+  // 未命中：把公共部分写入缓存（剥离访客字段），并标记本次为 miss
   if (c.res.status === 200 && !c.res.headers.has("set-cookie")) {
     try {
       const payload = stripVisitorFields((await c.res.clone().json()) as unknown);
@@ -116,7 +156,7 @@ app.use("/api/*", async (c, next) => {
       headers.delete("set-cookie");
       await caches.default.put(cacheKey, new Response(JSON.stringify(payload), { status: 200, headers }));
     } catch {
-      // 非 JSON（例如图片）不缓存内容，避免把二进制塞进边缘缓存
+      // 非 JSON 响应不写入缓存
     }
   }
   c.res.headers.set("x-edge-cache", "miss");
@@ -125,42 +165,6 @@ app.use("/api/*", async (c, next) => {
 
 // 其余 API 统一解析会话
 app.use("/api/*", sessionMiddleware);
-
-/**
- * 权限字段注入：命中边缘缓存的「世界信息」响应里没有 `myRole` / `canEdit`，
- * 这里按**当前会话**重新计算并补上（一次按主键查询世界、一次按复合主键查成员，都在索引上，开销可忽略）。
- * 这是让世界信息接口能安全进边缘缓存的关键：公共内容走缓存，权限永远实时算。
- */
-app.use("/api/*", async (c, next) => {
-  await next();
-  if (c.res.headers.get("x-edge-cache") !== "hit" || c.res.status !== 200) {
-    return;
-  }
-  const url = new URL(c.req.url);
-  if (!/^\/api\/worlds\/[\w-]+$/.test(url.pathname)) {
-    return;
-  }
-  try {
-    const payload = (await c.res.clone().json()) as { data?: Record<string, unknown> };
-    if (!payload?.data || typeof payload.data !== "object") {
-      return;
-    }
-    const worldId = url.pathname.split("/").pop() ?? "";
-    const userId = c.get("user")?.id ?? null;
-    const access = await loadWorldAccess(c.env.DB, worldId, userId);
-    if (!access) {
-      return;
-    }
-    const data = { ...payload.data };
-    data.myRole = access.role;
-    data.canEdit = canEdit(access, userId) && !access.banned;
-    const headers = new Headers(c.res.headers);
-    headers.set("content-type", "application/json; charset=utf-8");
-    c.res = new Response(JSON.stringify({ ...payload, data }), { status: 200, headers });
-  } catch {
-    // 注入失败就保持公共字段，前端会退化成只读展示
-  }
-});
 
 /**
  * 私有只读接口的浏览器缓存。
