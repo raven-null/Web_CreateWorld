@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { formatTime } from "../lib/format";
+import { useCachedResource } from "../lib/page-cache";
 import PageLoader from "../components/PageLoader";
 
 /** 世界详情（本页只用到部分字段） */
@@ -30,11 +31,8 @@ export default function WorldEntriesPage() {
   const { worldId = "" } = useParams<{ worldId: string }>();
   const navigate = useNavigate();
 
-  const [world, setWorld] = useState<WorldInfo | null>(null);
-  const [entries, setEntries] = useState<EntryItem[]>([]);
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [keyword, setKeyword] = useState("");
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const [showCreate, setShowCreate] = useState(false);
@@ -43,53 +41,58 @@ export default function WorldEntriesPage() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
 
-  // 加载世界信息（分类与权限）
-  useEffect(() => {
-    api<WorldInfo>(`/api/worlds/${worldId}`)
-      .then((data) => {
-        setWorld(data);
-        setNewCategoryId((current) => current || data.categories[0]?.id || "");
-      })
-      .catch((err: Error) => setError(err.message));
-  }, [worldId]);
-
-  /** 按当前分类与搜索词拉取条目列表 */
-  const fetchEntries = async () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (categoryId) {
-      params.set("categoryId", categoryId);
-    }
-    if (keyword.trim()) {
-      params.set("q", keyword.trim());
-    }
-    try {
-      setEntries(await api<EntryItem[]>(`/api/worlds/${worldId}/entries?${params.toString()}`));
-      setError("");
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 分类 / 世界变化：立即加载（不等防抖，切页更快）
-  useEffect(() => {
-    void fetchEntries();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worldId, categoryId]);
-
-  // 搜索词变化：防抖 300ms（跳过首次，避免与上面的加载重复）
+  /** 搜索词防抖后的值：驱动列表请求，避免每敲一个字都发请求 */
+  const [debouncedKeyword, setDebouncedKeyword] = useState("");
   const keywordFirstRun = useRef(true);
   useEffect(() => {
     if (keywordFirstRun.current) {
       keywordFirstRun.current = false;
       return;
     }
-    const timer = window.setTimeout(() => void fetchEntries(), 300);
+    const timer = window.setTimeout(() => setDebouncedKeyword(keyword), 300);
     return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyword]);
+
+  /**
+   * 世界信息与条目列表都走「缓存先渲染 + 后台刷新」：
+   * 从侧边栏切到本页时，先把上次的数据立刻显示出来，不再先闪一段加载动画。
+   * 缓存键带分类，来回切分类同样能立刻出内容。
+   */
+  const worldResource = useCachedResource<WorldInfo>(`world-info:${worldId}`, () =>
+    api<WorldInfo>(`/api/worlds/${worldId}`),
+  );
+  const world = worldResource.data;
+
+  /** 条目列表：搜索时不缓存（结果随关键词变化，缓存没有意义） */
+  const hasKeyword = debouncedKeyword.trim().length > 0;
+  const listKey = hasKeyword ? `entries-search:${worldId}` : `entries:${worldId}:${categoryId ?? "all"}`;
+  const entriesResource = useCachedResource<EntryItem[]>(listKey, () => {
+    const params = new URLSearchParams();
+    if (categoryId) {
+      params.set("categoryId", categoryId);
+    }
+    if (hasKeyword) {
+      params.set("q", debouncedKeyword.trim());
+    }
+    return api<EntryItem[]>(`/api/worlds/${worldId}/entries?${params.toString()}`);
+  });
+  const entries = entriesResource.data ?? [];
+  const loading = entriesResource.data === null && entriesResource.error === "";
+
+  // 列表加载完（或切换分类后）把新建条目默认分类补上
+  useEffect(() => {
+    if (world) {
+      setNewCategoryId((current) => current || categoryId || world.categories[0]?.id || "");
+    }
+  }, [world, categoryId]);
+
+  // 接口报错时展示出来
+  useEffect(() => {
+    const message = worldResource.error || entriesResource.error;
+    if (message) {
+      setError(message);
+    }
+  }, [worldResource.error, entriesResource.error]);
 
   /**
    * 创建条目后直接去画布看它。
@@ -155,7 +158,7 @@ export default function WorldEntriesPage() {
           <button
             type="button"
             className="btn ghost"
-            onClick={() => void fetchEntries()}
+            onClick={() => entriesResource.reload()}
             title="重新加载最新数据"
           >
             刷新
