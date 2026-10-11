@@ -40,27 +40,52 @@ app.on(["POST", "GET"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 app.route("/api", migrateRoutes);
 
 /**
+ * 判定「这个路径是否真的是某个世界的详情」。
+ *
+ * ⚠️ 必须排除保留字：`/api/worlds/mine` 是「我的世界列表」接口，返回的是**数组**，
+ * 但它的形状和 `/api/worlds/:id` 一模一样（`mine` 也能匹配 `[\w-]+`）。
+ * 早先没排除，结果列表接口被当成世界详情走了缓存与权限注入，
+ * 前端拿到的数据结构变了，直接抛 `TypeError: m.map is not a function`。
+ */
+const RESERVED_WORLD_SUBPATHS = new Set(["mine", "new", "search"]);
+
+/**
+ * 从世界相关路径中取出世界 id（不是世界详情时返回 null）。
+ * @param pathname 请求路径
+ * @returns 世界 id 或 null
+ */
+function parseWorldIdPath(pathname: string): string | null {
+  const matched = /^\/api\/worlds\/([\w-]+)$/.exec(pathname);
+  const candidate = matched?.[1];
+  if (!candidate) {
+    return null;
+  }
+  return RESERVED_WORLD_SUBPATHS.has(candidate) ? null : candidate;
+}
+
+/**
  * 首屏公开接口的**边缘缓存**（挂在会话解析之前：这类请求无需认证，也就不必查会话）。
  *
- * 为什么必须加：条目列表、关系图是访客点进某个世界时**必然要调**的接口，而 Worker 冷启动
- * 实测可达 1.9s、跨境往返再叠几百毫秒——用户点一下卡片就要等好几秒，甚至触发前端 8 秒超时。
- * 用 Cloudflare Cache API 在边缘存 60 秒：命中时只需几十毫秒，谁先来都不用吃冷启动。
+ * 为什么必须加：条目列表、关系图、世界信息是访客点进某个世界时**必然要调**的接口，
+ * 而 Worker 冷启动实测可达 1.9s、跨境往返再叠几百毫秒——用户点一下卡片就要等好几秒，
+ * 甚至触发前端 8 秒超时。用 Cloudflare Cache API 在边缘存 30 秒：命中时只需几十毫秒。
  *
  * ⚠️ 缓存内容必须与访客身份无关。
  * `/api/worlds/:id` 的响应带 `canEdit` / `myRole`（随登录状态变化），直接缓存会串味；
- * 因此这里在写入前剥掉这两个字段，命中后再按**当前访客**重新计算（见下方权限注入中间件），
- * 于是它也能享受边缘缓存的速度，同时不会把别人的权限看到。
+ * 因此写入前剥掉这两个字段，命中后再按**当前访客**重新计算（见下方合并的中间件）。
  */
 const EDGE_CACHED_PATH_PATTERNS = [
   /^\/api\/discover$/,
   /^\/api\/discover\/tags$/,
-  /^\/api\/worlds\/[\w-]+$/,
   /^\/api\/worlds\/[\w-]+\/(entries|graph)$/,
 ];
 const EDGE_CACHE_TTL_SECONDS = 30;
 
 /** 判定某个 GET 请求是否可以走边缘缓存 */
 function isEdgeCacheable(pathname: string): boolean {
+  if (parseWorldIdPath(pathname) !== null) {
+    return true;
+  }
   return EDGE_CACHED_PATH_PATTERNS.some((pattern) => pattern.test(pathname));
 }
 
@@ -117,15 +142,19 @@ app.use("/api/*", async (c, next) => {
 
   await next();
 
-  // 权限字段：按当前访客实时计算，绝不来自缓存
-  const isWorldInfo = /^\/api\/worlds\/[\w-]+$/.test(url.pathname);
+  // 权限字段：按当前访客实时计算，绝不来自缓存（只对「世界详情」生效，`/worlds/mine` 这类列表接口要排除）
+  const worldIdInPath = parseWorldIdPath(url.pathname);
   if (cachedPublic) {
+    // 形状兜底：只有确实像世界详情（有 id 与 name）才按详情返回，避免把列表接口改坏
+    const looksLikeWorld = typeof cachedPublic.id === "string" && typeof cachedPublic.name === "string";
+    if (!looksLikeWorld) {
+      return;
+    }
     const payload: Record<string, unknown> = { ok: true, data: { ...cachedPublic } };
-    if (isWorldInfo) {
+    if (worldIdInPath) {
       try {
-        const worldId = url.pathname.split("/").pop() ?? "";
         const userId = c.get("user")?.id ?? null;
-        const access = await loadWorldAccess(c.env.DB, worldId, userId);
+        const access = await loadWorldAccess(c.env.DB, worldIdInPath, userId);
         const data = payload.data as Record<string, unknown>;
         data.myRole = access?.role ?? null;
         data.canEdit = Boolean(access && canEdit(access, userId) && !access.banned);
