@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
  */
 export default defineConfig({
   plugins: [react()],
+  // 构建时注入画布版本戳：画布 iframe 用它规避 CDN 缓存（每次构建都不同）
+  define: {
+    __CANVAS_VERSION__: JSON.stringify(Date.now().toString(36)),
+  },
   // 显式声明多页入口：Vite 默认只构建 index.html，
   // 不声明的话 diagnose.html 在开发时能打开、生产构建却不会产出
   build: {

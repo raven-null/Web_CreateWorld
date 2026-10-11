@@ -105,6 +105,12 @@ const NODE_SIZE = { w: 9, h: 4 };
 const SYNC_DEBOUNCE_MS = 1500;
 
 /**
+ * 画布静态资源版本戳：由 vite 在构建时注入（见 vite.config.ts 的 define）。
+ * weave.html 走 Cloudflare 缓存，版本戳变化可确保浏览器与 CDN 都取到当前构建的画布文件。
+ */
+declare const __CANVAS_VERSION__: string;
+
+/**
  * 本地布局缓存键：节点坐标只存在浏览器里，避免每次打开画布都重新排列。
  * @param worldId 世界 id
  * @returns localStorage 键名
@@ -597,7 +603,8 @@ export default function WorldCanvasPage() {
       <iframe
         ref={iframeRef}
         className="canvas-frame"
-        src="/weave/weave.html"
+        // 带构建版本戳，避免 CDN/浏览器缓存命中旧的画布文件
+        src={`/weave/weave.html?v=${__CANVAS_VERSION__}`}
         title="画布编辑器"
         allow="clipboard-write"
       />

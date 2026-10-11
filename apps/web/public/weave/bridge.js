@@ -111,6 +111,34 @@
   }
 
   /**
+   * 调试日志：同步桥出问题时需要能在浏览器控制台直接看到进度。
+   * @param {...unknown} args 日志内容
+   */
+  function log() {
+    var args = Array.prototype.slice.call(arguments);
+    console.log.apply(console, ["[weave-bridge]"].concat(args));
+  }
+
+  /** 遮罩保护：超过该时间仍未成功载入数据，就把遮罩换成可读的错误提示 */
+  var LOADING_TIMEOUT_MS = 6000;
+  var loadingTimer = null;
+
+  /** 载入失败时替换遮罩内容，避免出现永远转不完的「正在加载」 */
+  function showLoadFailure(reason) {
+    var el = document.getElementById("bridgeLoading");
+    if (!el) {
+      return;
+    }
+    el.innerHTML =
+      '<div style="text-align:center;line-height:1.9;max-width:480px">' +
+      "<div style=\"color:#e07a6a;margin-bottom:6px\">画布数据未能载入</div>" +
+      "<div style=\"font-size:12px;color:#a89c88\">" +
+      String(reason || "未知原因") +
+      "<br>请按 F12 查看控制台的 [weave-bridge] 日志，或刷新页面重试。" +
+      "</div></div>";
+  }
+
+  /**
    * 用父页面给的数据替换当前画布。
    * Weave 的导入路径是 App._loadFromData(存档)：它会先完整校验、再整体替换画布状态，
    * 这正是外部注入要走的入口（比直接改 canvasState 安全，能同步撤销历史与视口）。
@@ -118,25 +146,33 @@
    */
   function applyData(payload) {
     if (!payload || typeof payload !== "object") {
+      showLoadFailure("父页面下发的数据为空");
       return;
     }
+    var nodeCount = Array.isArray(payload.nodes) ? payload.nodes.length : 0;
+    var linkCount = Array.isArray(payload.connections) ? payload.connections.length : 0;
+    log("收到画布数据：", nodeCount, "节点 /", linkCount, "连线");
     memoryData = JSON.stringify(payload);
     suppressReport = true;
     try {
       var ok = typeof App._loadFromData === "function" ? App._loadFromData(payload) : false;
       if (!ok) {
-        notify("画布数据加载失败（存档格式校验未通过）");
+        log("App._loadFromData 返回 false：存档未通过 Weave 的校验");
+        showLoadFailure("存档未通过 Weave 校验（节点或分区字段不合法）");
       } else {
-        var loading = document.getElementById("bridgeLoading");
-        if (loading) {
-          loading.remove();
+        log("数据已载入画布");
+        if (loadingTimer !== null) {
+          clearTimeout(loadingTimer);
+          loadingTimer = null;
         }
+        hideLoading();
         if (typeof App.centerCanvasOnNodes === "function") {
           App.centerCanvasOnNodes();
         }
       }
     } catch (error) {
-      notify("画布加载失败：" + error.message);
+      log("载入数据异常：", error);
+      showLoadFailure(error && error.message ? error.message : String(error));
     }
     // 装载完成后把这份数据视作「已同步基线」，避免刚打开就回写一遍
     setTimeout(function () {
@@ -295,18 +331,23 @@
     }
   }
 
-  /** 启动：接管保存、挂 UI，并通知父页面可以下发数据 */
+  /** 启动：挂 UI、通知父页面可以下发数据，并加上载入超时保护 */
   function boot() {
     mountUi();
-    var originalSave = App.saveCanvas.bind(App);
-    App.saveCanvas = function () {
-      originalSave();
-    };
+    log("桥已启动，等待父页面下发数据");
+    loadingTimer = setTimeout(function () {
+      log("等待数据超时");
+      showLoadFailure("等待世界数据超时（父页面未下发或接口未返回）");
+    }, LOADING_TIMEOUT_MS);
     send({ type: "weave:ready" });
   }
 
-  /** 父页面显式要求隐藏加载遮罩（数据注入后由它决定时机） */
+  /** 隐藏加载遮罩（数据注入成功后调用） */
   function hideLoading() {
+    if (loadingTimer !== null) {
+      clearTimeout(loadingTimer);
+      loadingTimer = null;
+    }
     var el = document.getElementById("bridgeLoading");
     if (el) {
       el.remove();
