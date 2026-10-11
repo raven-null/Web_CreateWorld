@@ -9343,6 +9343,195 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     writePalette(palette);
   }
 
+  // ---------- 画布节点：按颜色筛选与删除（删颜色时的级联处理） ----------
+
+  /**
+   * 列出画布上使用某个颜色的节点。
+   * @param {string} color 颜色（预设色名或十六进制）
+   * @returns {Array<{id: string, label: string, color: string}>} 节点列表
+   */
+  function nodesWithColor(color) {
+    var nodes = (App.canvasState && App.canvasState.nodes) || [];
+    var list = nodes.filter(function (node) {
+      return (node.color || "") === color;
+    });
+    return list.map(function (node) {
+      return { id: node.id, label: node.label || "未命名", color: node.color || "" };
+    });
+  }
+
+  /**
+   * 删除画布上的节点（连带其条目）。
+   *
+   * 直接复用 Weave 自己的 `App.removeNodes(ids)`：它会一并处理连线清理、分区 nodeIds、
+   * 选中状态、收起记录、DOM 销毁与画布重绘——比桥自己拼一遍更稳。
+   * 删除后触发一次保存，父页面（React 画布宿主）会把这批「画布上消失的节点」对应的条目删掉。
+   * @param {string[]} nodeIds 要删除的节点 id
+   * @returns {number} 提交删除的节点数
+   */
+  function deleteEntriesForNodes(nodeIds) {
+    if (!nodeIds.length) {
+      return 0;
+    }
+    if (typeof App.removeNodes !== "function") {
+      log("App.removeNodes 不存在，取消级联删除");
+      return 0;
+    }
+    // 删除过程里的中间态不必上报，删完统一报一次
+    suppressReport = true;
+    try {
+      App.removeNodes(nodeIds);
+    } catch (error) {
+      log("删除节点出错：", error);
+    }
+    suppressReport = false;
+    App.saveCanvas();
+    log("已删除节点：", nodeIds.join(", "));
+    return nodeIds.length;
+  }
+
+  // ---------- 确认弹窗（破坏性操作前的询问） ----------
+
+  /** 确认弹窗容器 id */
+  var CONFIRM_ID = "bridgeConfirm";
+
+  /** 关闭确认弹窗 */
+  function closeConfirm() {
+    var box = document.getElementById(CONFIRM_ID);
+    if (box) {
+      box.style.display = "none";
+      box.innerHTML = "";
+    }
+  }
+
+  /**
+   * 打开确认弹窗。
+   * @param {{title: string, messageHtml: string, confirmText: string, danger?: boolean, nodes?: Array, onConfirm: Function}} options 选项
+   */
+  function openConfirm(options) {
+    var box = document.getElementById(CONFIRM_ID);
+    if (!box) {
+      box = document.createElement("div");
+      box.id = CONFIRM_ID;
+      box.className = "bridge-modal";
+      box.style.display = "none";
+      document.body.appendChild(box);
+    }
+    var children = options.nodes || [];
+    var nodeListHtml = "";
+    if (children.length > 0) {
+      var names = children
+        .slice(0, 6)
+        .map(function (node) {
+          return '<li class="bridge-confirm-node">' + escapeAttr(node.label) + "</li>";
+        })
+        .join("");
+      var more =
+        children.length > 6 ? '<li class="bridge-confirm-node">…等共 ' + children.length + " 个</li>" : "";
+      nodeListHtml = '<ul class="bridge-confirm-list">' + names + more + "</ul>";
+    }
+
+    box.innerHTML =
+      '<div class="bridge-modal-mask" data-confirm="cancel"></div>' +
+      '<div class="bridge-modal-box" role="dialog" aria-modal="true">' +
+      '<div class="bridge-modal-head">' +
+      escapeAttr(options.title) +
+      '<button type="button" class="bridge-modal-close" data-confirm="cancel" aria-label="关闭">×</button>' +
+      "</div>" +
+      '<div class="bridge-modal-body"><p class="bridge-confirm-text">' +
+      (options.messageHtml || "") +
+      "</p>" +
+      nodeListHtml +
+      "</div>" +
+      '<div class="bridge-modal-foot">' +
+      '<button type="button" class="bridge-palette-btn" data-confirm="cancel">取消</button>' +
+      '<button type="button" class="bridge-palette-btn ' +
+      (options.danger ? "danger-strong" : "primary") +
+      '" data-confirm="ok">' +
+      escapeAttr(options.confirmText) +
+      "</button>" +
+      "</div>" +
+      "</div>";
+    box.style.display = "flex";
+
+    box.onclick = function (event) {
+      var target = event.target;
+      if (!target || !target.closest) {
+        return;
+      }
+      var kind = target.closest("[data-confirm]");
+      if (!kind) {
+        return;
+      }
+      var action = kind.getAttribute("data-confirm");
+      closeConfirm();
+      if (action === "ok" && typeof options.onConfirm === "function") {
+        options.onConfirm();
+      }
+    };
+    box.onkeydown = function (event) {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeConfirm();
+      }
+    };
+  }
+
+  /**
+   * 取某个颜色的显示说明（找不到时返回颜色本身）。
+   * @param {string} color 颜色
+   * @returns {string} 说明
+   */
+  function labelOfColor(color) {
+    var items = paletteItems();
+    for (var i = 0; i < items.length; i += 1) {
+      if (items[i].color === color) {
+        return items[i].label;
+      }
+    }
+    return color;
+  }
+
+  /**
+   * 删除颜色前的确认与级联处理。
+   *
+   * 行为：
+   *   · 若画布上有使用该颜色的节点 → 弹窗列出节点，确认后**连带删除这些节点（即对应条目）**
+   *   · 若没有节点使用 → 仍然弹窗确认（避免误点把颜色删掉），但语气轻一些
+   * @param {string} color 颜色
+   */
+  function confirmRemoveColor(color) {
+    var name = escapeAttr(labelOfColor(color));
+    var nodes = nodesWithColor(color);
+    var messageHtml =
+      nodes.length > 0
+        ? "画布上有 <strong>" +
+          nodes.length +
+          "</strong> 个节点正在使用「<strong>" +
+          name +
+          "</strong>」。删除这个颜色会<strong>连同这些节点一起删除</strong>（节点即条目，正文也会一并删除）："
+        : "确定删除颜色「<strong>" + name + "</strong>」吗？画布上目前没有节点在使用它。";
+    openConfirm({
+      title: "删除颜色",
+      messageHtml: messageHtml,
+      confirmText: nodes.length > 0 ? "删除颜色与节点" : "删除颜色",
+      danger: nodes.length > 0,
+      nodes: nodes,
+      onConfirm: function () {
+        if (nodes.length > 0) {
+          deleteEntriesForNodes(
+            nodes.map(function (node) {
+              return node.id;
+            }),
+          );
+        }
+        removePaletteColor(color);
+        buildColorDots();
+      },
+    });
+  }
+
   /** 颜色面板状态：mode = none（收起）/ add（添加颜色）/ edit（改某个颜色的说明） */
   var palettePanel = { mode: "none", editColor: "" };
 
@@ -9510,14 +9699,14 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     buildColorDots();
   }
 
-  /** 移除当前编辑的颜色 */
+  /** 移除当前弹窗里编辑的颜色（同样先走确认） */
   function deletePaletteColor() {
     if (palettePanel.mode !== "edit" || !palettePanel.editColor) {
       return;
     }
-    removePaletteColor(palettePanel.editColor);
+    var color = palettePanel.editColor;
     closePalettePanel();
-    buildColorDots();
+    confirmRemoveColor(color);
   }
 
   /** 面板内的事件委托（面板内容每次重渲染，绑在容器上更稳） */
@@ -9617,8 +9806,8 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       var color = pillMenuColor;
       hidePillMenu();
       if (action.dataset.action === "remove") {
-        removePaletteColor(color);
-        buildColorDots();
+        // 先确认：画布上若有该颜色的节点，会提示会连带删除
+        confirmRemoveColor(color);
       } else {
         openEditColorPanel(color);
       }
@@ -9874,6 +10063,16 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       ".bridge-palette-btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}",
       ".bridge-palette-btn.danger{margin-right:auto}",
       ".bridge-palette-btn.danger:hover{color:#e07a6a;border-color:#e07a6a}",
+      // 破坏性确认：这个按钮要比普通按钮更醒目
+      ".bridge-palette-btn.danger-strong{background:#c25e5e;border-color:#c25e5e;color:#fff;font-weight:600}",
+      ".bridge-palette-btn.danger-strong:hover{background:#d06a6a;border-color:#d06a6a;color:#fff}",
+      // 确认弹窗正文与节点清单
+      ".bridge-confirm-text{margin:0;font-size:13px;line-height:1.75;color:var(--text-primary)}",
+      ".bridge-confirm-text strong{color:var(--accent)}",
+      ".bridge-confirm-list{margin:12px 0 0;padding:0;list-style:none;max-height:150px;overflow-y:auto;",
+      "display:flex;flex-direction:column;gap:4px}",
+      ".bridge-confirm-node{font-size:12px;color:var(--text-secondary);background:var(--bg-input);",
+      "border:1px solid var(--border);border-radius:6px;padding:4px 10px}",
       ".bridge-palette-swatches{display:flex;align-items:center;gap:8px;flex-wrap:wrap}",
       ".bridge-swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;",
       "transition:transform .15s,border-color .15s}",
