@@ -12,7 +12,7 @@
 import type { MapHostAdapter, MapLayer, TerrainBrush } from "@worldmap/core";
 import { terrainPaletteToUint32 } from "@worldmap/core";
 import { bakeHandDrawnLayer, bakeRegionInto, currentPaperTexture, type RenderStyleMode } from "./terrain-render";
-import { DECORATION_CELL_PX } from "./terrain-style";
+import { DECORATION_CELL_PX, type SymbolStyle } from "./terrain-style";
 import {
   RasterTileStore,
   TILE_SIZE,
@@ -395,6 +395,39 @@ export class MapLayerStore {
   private readonly handDrawnBitmaps = new Map<string, HTMLCanvasElement>();
   /** 当前渲染模式 */
   private styleMode: RenderStyleMode = "flat";
+  /**
+   * 装饰符号画风（古地图木刻符号 / 简洁现代程序化绘制）。
+   *
+   * 与 `styleMode`（纯色 / 手绘）是**两个正交的维度**：
+   * 只有手绘模式下画装饰，所以它也只影响手绘位图。
+   * 存在这里而不是每次渲染时从 props 读，是因为**局部重烘**（`rebakeRegion`）
+   * 也必须拿到同一份值，否则撤销一笔后新烘的那块会和周围用不同画风（与纸张同理）。
+   */
+  private symbolStyle: SymbolStyle = "modern";
+
+  /**
+   * 设置装饰符号画风。
+   *
+   * 变更时**清空手绘位图缓存**：符号是烘进位图里的，不清就会继续显示旧画风
+   * （表现为"点了没反应"）。调用方清完后自己调 `redrawAllRenderBitmaps()` 重烘。
+   * 切换是**纯观感**操作：不写任何瓦片、不标脏、不碰用户地图内容。
+   *
+   * @param style 画风：`antique` 古地图 / `modern` 简洁现代
+   * @returns 是否真的发生了变化（false 表示值没变，调用方可以跳过多余的重绘）
+   */
+  setSymbolStyle(style: SymbolStyle): boolean {
+    if (this.symbolStyle === style) {
+      return false;
+    }
+    this.symbolStyle = style;
+    this.invalidateHandDrawn();
+    return true;
+  }
+
+  /** 当前装饰符号画风 */
+  get currentSymbolStyle(): SymbolStyle {
+    return this.symbolStyle;
+  }
 
   /**
    * 设置渲染模式。
@@ -437,7 +470,14 @@ export class MapLayerStore {
         return cached;
       }
       // 手绘位图是整幅烘的（图案 + 描边 + 装饰），编辑后一次性重烘
-      const baked = bakeHandDrawnLayer(store.indices, store.width, store.height, store.palette, this.paper());
+      const baked = bakeHandDrawnLayer(
+        store.indices,
+        store.width,
+        store.height,
+        store.palette,
+        this.paper(),
+        this.symbolStyle,
+      );
       this.handDrawnBitmaps.set(layerId, baked);
       return baked;
     }
@@ -525,7 +565,16 @@ export class MapLayerStore {
     }
     // 纸张与地形一起重烘：`bakeRegionInto` 内部会先按当前铺法铺纸，
     // 所以这里不必再单独清底（重复清底会多一次全区域填色）
-    bakeRegionInto(context, store.indices, store.width, store.height, region, store.palette, this.paper());
+    bakeRegionInto(
+      context,
+      store.indices,
+      store.width,
+      store.height,
+      region,
+      store.palette,
+      this.paper(),
+      this.symbolStyle,
+    );
   }
 }
 

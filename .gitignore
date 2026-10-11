@@ -29,3 +29,11 @@ Thumbs.db
 
 # 临时参考目录（clone 外部仓库查看实现时用，用完即删）
 .tmp-ref/
+# 绱犳潗澶勭悊涓棿浜х墿锛堟瀯寤烘湡鑴氭湰鐨勫伐浣滅洰褰曪級
+.tmp-assets/
+.tmp-symbol-preview.png
+
+# temp working dirs and scratch files (scripts / parallel sessions)
+.tmp-*/
+.tmp-*.png
+.tmp-*.svg

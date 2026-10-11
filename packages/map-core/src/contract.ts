@@ -118,6 +118,15 @@ export interface MapHostAdapter {
 export type SaveState = "idle" | "saving" | "saved" | "offline" | "error";
 
 /**
+ * 手写地名所用字体的加载状态。
+ *
+ * 之所以要有 `fallback`：字体是**可选的观感增强**，
+ * 加载失败（地址失效、体积过大超时、浏览器不支持 woff2）必须能降级到系统楷体，
+ * 而不是让界面一直停在「加载中」。
+ */
+export type HandwritingFontState = "idle" | "loading" | "ready" | "fallback";
+
+/**
  * 主题 token（视觉契约）。
  *
  * 插件**不假设宿主的 CSS 变量名**：用自己命名空间的 token，
@@ -134,6 +143,14 @@ export interface MapEditorTheme {
   radius: string;
   fontSans: string;
   fontSerif: string;
+  /**
+   * 手写体字体栈（地名用手写体时使用，见 `MapEditorProps.labelsHandwriting`）。
+   *
+   * 默认值以**系统楷体**打头（`Kaiti SC` / `STKaiti` / `楷体` / `KaiTi`）：
+   * 完整中文字体文件体积太大，默认只走系统字体，零下载也能有手写感；
+   * 想用统一的跨端观感时，宿主再提供 `handwritingFontUrl` 并把它加到这一串最前面。
+   */
+  fontHand: string;
   /** 3D 视图专用（§14.3.5），不传则用内置值 */
   globeSkyColor?: string;
   globeAtmosphereColor?: string;
@@ -204,6 +221,57 @@ export interface MapEditorProps {
   paperFill?: "tile" | "stretch";
   /** 纸张平铺单元边长（默认 512，仅 `tile` 用）：越大重复感越弱、显存占用越高 */
   paperTextureTileSize?: number;
+  /**
+   * 是否叠一层**旧纸纹理**（默认开启；只影响手绘模式的纸张，与数据层无关）。
+   *
+   * 由插件**程序化生成**（固定种子）：细颗粒噪点 + 几块极淡的渍斑 + 一两道折痕，
+   * 用来给「一张被放大的纸照片」补上层次。素材照片本身分辨率有限，
+   * 拉伸铺满大号白板后细节会偏平，靠这一层把「旧」的感觉找回来。
+   * 关掉它就回到「只有纸张照片」的样子。
+   */
+  paperGrain?: boolean;
+  /**
+   * 旧纸纹理强度（0~1，默认 0.35，很轻）。
+   *
+   * 0 与 `paperGrain: false` 等效；调高会更旧但也会更「脏」，
+   * 建议超过 0.6 前先在目标纸张素材上看一眼效果。
+   */
+  paperGrainStrength?: number;
+  /**
+   * 地名是否用手写体（默认关闭）。
+   *
+   * 开启后，画布上的地名标注、测量读数、比例尺与标记列表都改用楷体 / 手写字体栈
+   * （见 `MapEditorTheme.fontHand`）；关闭则保持无衬线体。
+   * 与纸张 / 旧纸纹理一样，这只影响渲染，不写入任何数据。
+   */
+  labelsHandwriting?: boolean;
+  /**
+   * 装饰符号的画风（默认 `antique` 古地图）。
+   *
+   * - `antique`：木刻线条素材（随插件分发的 Kenney Cartography Pack，CC0）
+   * - `modern`：程序化绘制的简洁现代手绘
+   *
+   * ⚠️ **只影响观感，不碰数据**：数据层永远只有 1 字节/格的调色板下标，
+   * 符号是渲染时的产物。因此切换画风既不写瓦片、也不产生脏数据，
+   * 用户的地图内容与保存 / 导出都不受影响（工具栏上可随时来回切）。
+   * 默认取 `antique`：主站配的是羊皮纸素材，木刻符号更配。
+   */
+  symbolStyle?: "antique" | "modern";
+  /**
+   * 手写字体文件地址（可选，由宿主提供）。
+   *
+   * 为什么必须由宿主传：插件本体不做网络请求（边界规则第 3 条），
+   * 而且完整中文字体动辄数 MB，**不该默认打包**。
+   * 宿主把它托管在自己的静态资源 / CDN 上，用户打开「手写地名」后再把地址交进来，
+   * 插件用 `FontFace` 按需加载（详见 `src/handwriting-font.ts` 的说明）。
+   *
+   * 不传、加载失败或超时（默认 8 秒）时静默降级到系统楷体栈，界面不阻塞也不报错。
+   */
+  handwritingFontUrl?: string;
+  /** 加载失败时的超时时间（毫秒，默认 8000）：到点即降级，避免"卡在加载中" */
+  handwritingFontTimeoutMs?: number;
+  /** 手写字体加载状态变化时通知宿主（宿主可据此提示或重试） */
+  onHandwritingFontStateChange?: (state: HandwritingFontState) => void;
   locale?: "zh-CN" | "en";
   features?: MapEditorFeatures;
   /**

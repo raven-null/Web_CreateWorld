@@ -36,6 +36,31 @@ export interface TerrainStyle {
 export type DecorationKind = "peak" | "tree" | "wave" | "dune";
 
 /**
+ * 装饰符号的画风。
+ *
+ * - `antique`：手绘古地图（木刻线条，素材来自 Kenney Cartography Pack，CC0）
+ * - `modern`：简洁现代手绘（程序化绘制，线条干净、线条细）
+ *
+ * 两者只影响**装饰符号与图案的画法**，数据层（1 字节/格的调色板下标）完全不变——
+ * 所以切换是纯观感操作，不会碰用户的地图内容。
+ */
+export type SymbolStyle = "antique" | "modern";
+
+/**
+ * 古地图风格下，每个装饰类型用哪个素材符号。
+ *
+ * 素材是一整套无命名的矢量符号，这里的编号是构建期从素材拆解时给的序号
+ * （见 `symbols-antique.ts` 的 `sourceIndex`）。
+ * ⚠️ 这是**观感参数**：觉得某个地形上的符号不合适，改这里的编号即可。
+ */
+export const ANTIQUE_DECORATION_SYMBOLS: Record<DecorationKind, number> = {
+  peak: 44,
+  tree: 40,
+  wave: 18,
+  dune: 39,
+};
+
+/**
  * 默认地形样式表：按调色板下标给出图案与描边。
  *
  * 命名与 `DEFAULT_TERRAIN_PALETTE` 对齐（海洋 / 浅海 / 草地 / 森林 / 沙漠 / 山地 / 雪地）。

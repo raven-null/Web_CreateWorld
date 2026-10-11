@@ -5,21 +5,46 @@
  * 1. **图案不进数据**：数据层只有 1 字节/格的调色板下标；纹理、描边、装饰
  *    全部是渲染时的产物。否则用户一涂改就会把纹理弄花，调色板也装不下。
  * 2. **纹理按世界坐标固定**：同一个地形格永远长同一个图案，缩放平移时不会「游动」。
+ *    纸张的旧纸叠加层（`drawPaperGrain()`）也遵守这一条：它的相位锚在白板原点，
+ *    因此「整幅烘焙」与「只重烘一小块」得到的花纹完全一致（撤销一笔不会浮出色块）。
  * 3. **纹理层整幅缓存**：把图案烘到一张离屏画布上，绘制时只做一次 drawImage；
  *    代价是编辑后需要重烘（一笔一次，可接受），换来的是涂抹时的帧率。
+ *
+ * 纸张相关的三个可调项都来自宿主 props（插件本体不请求网络、也不读本地文件）：
+ * `paperTextureUrl` / `paperFill` 决定纸张素材，`paperGrain` / `paperGrainStrength`
+ * 决定叠加的旧纸纹理强弱。
  */
 import type { TerrainBrush } from "@worldmap/core";
+import { buildFontSpec, resolveHandwritingStack } from "./handwriting-font";
 import {
   DECORATION_CELL_PX,
   decorationAt,
   decorationDensityFor,
   decorationRange,
+  hash2d,
   resolveTerrainStyle,
+  type SymbolStyle,
   type TerrainPatternKind,
 } from "./terrain-style";
+import { drawDecorationSymbol } from "./symbols";
 
 /** 图案格边长（屏幕像素）：纹理在屏幕上的粒度，与缩放无关 */
 const PATTERN_CELL_PX = 32;
+
+/**
+ * 装饰符号的**基尺寸**（世界像素，未乘尺寸系数）。
+ *
+ * 为什么与程序化装饰的 `7` 差这么多：程序化装饰是一小段折线（峰值约 7~14px 宽），
+ * 而古地图素材是**一整个方框符号**（线条细、内部留白多），缩到 7 会糊成一团小点。
+ * 取 16（约装饰格 `DECORATION_CELL_PX = 28` 的 57%）的依据：
+ * 1. 符号是整格一个，不应互相咬合——最大系数 1.3 时为 20.8px，仍在格内
+ * 2. 与程序化装饰在屏幕上的**视觉体量**接近：程序化峰值横跨约 2×7×1.3 ≈ 18px，
+ *    16 的方框符号在视觉重量上与之相当，切换画风时疏密感不会突变
+ *
+ * 注意：这是**边长**。`symbols.ts` 的 `drawDecorationSymbol()` 已按「方框底边贴 y」定位，
+ * 所以不必在这里做居中对齐补偿。
+ */
+const SYMBOL_BASE_SIZE = 16;
 
 /**
  * 纸张底色：**暗纸**（比界面底色略暖一点）。
@@ -315,6 +340,8 @@ function drawPaperStretch(
  * @param boardHeight 白板高
  * @param offsetX 区域左上角在世界坐标里的 x（把局部坐标换算回世界坐标用）
  * @param offsetY 区域左上角在世界坐标里的 y
+ * @param paper 调用方注入的纸张贴图（渲染层传当前生效的贴图；测试传替身）。
+ *   不传才退回全局贴图——这样纯逻辑测试不必依赖 DOM
  */
 export function fillPaperRegion(
   context: CanvasRenderingContext2D,
@@ -326,8 +353,9 @@ export function fillPaperRegion(
   boardHeight: number,
   offsetX = 0,
   offsetY = 0,
+  paper?: CanvasImageSource & { width: number; height: number },
 ): void {
-  if (paperFill === "stretch") {
+  if (paperFill === "stretch" && !paper) {
     const stretch = ensureStretchPaper(boardWidth, boardHeight);
     if (stretch) {
       // 局部重烘时坐标系已经被移到区域左上角，世界坐标要减掉这个原点；
@@ -348,18 +376,416 @@ export function fillPaperRegion(
     }
     // 没设置过拉伸素材（理论上不会走到）：退回平铺，至少不是空白
   }
-  const pattern = context.createPattern(currentPaperTexture(), "repeat");
+  // 没有注入贴图时才用全局纸张：
+  // - 浏览器里就是「宿主传的素材，或内置程序化暗纸」
+  // - 无 DOM 的环境（node 测试）退回常量底色，避免为了画一张底图去撞 `document`
+  const texture = paper ?? (typeof document === "undefined" ? null : currentPaperTexture());
+  const pattern = texture ? context.createPattern(texture, "repeat") : null;
   if (!pattern) {
     context.fillStyle = PAPER_BASE;
     context.fillRect(left - offsetX, top - offsetY, width, height);
     return;
   }
-  // 图案相位对齐到**白板原点**：否则局部重烘出来的纹路与整幅烘焙对不上（错位）
-  context.save();
-  context.translate(offsetX, offsetY);
+  // 贴图锚在白板原点：坐标系已经被移到区域左上角，所以绘制位置要减掉区域原点；
+  // 用 translate 反而会再叠一层平移，把位置算成两倍（踩过这个坑）
   context.fillStyle = pattern;
-  context.fillRect(left, top, width, height);
-  context.restore();
+  context.fillRect(left - offsetX, top - offsetY, width, height);
+}
+
+// ———————————————————————————————————————————————————————————————
+// 旧纸叠加层（程序化，不依赖任何外部素材）
+// ———————————————————————————————————————————————————————————————
+
+/**
+ * 颗粒噪点贴图边长（世界像素）。
+ *
+ * 取 512 与纸张平铺单元同尺寸：噪点是均匀随机场，512 平铺看不出接缝，
+ * 而 512×512 只铺 5 万个 1px 点，生成一次约几十毫秒，可接受。
+ */
+export const PAPER_GRAIN_NOISE_SIZE = 512;
+
+/**
+ * 渍斑 / 折痕贴图边长（世界像素）。
+ *
+ * 取 512 的 4 倍：渍斑是**低频**图案，平铺周期太小会出现肉眼可辨的重复块；
+ * 2048 的周期在 2048×1024 的白板上最多重复两次，观感上等于不重复，
+ * 而每格只画 3 块渍斑 + 1 道折痕，绘制开销与周期大小无关。
+ */
+export const PAPER_GRAIN_MARK_SIZE = 2048;
+
+/** 默认颗粒强度：很轻，只为「有层次」而不是「显脏」 */
+export const DEFAULT_PAPER_GRAIN_STRENGTH = 0.35;
+
+/** 颗粒强度下限：低于它干脆不画（0 表示关闭） */
+const PAPER_GRAIN_MIN_STRENGTH = 0.05;
+
+/** 颗粒强度上限：1 对应最高不透明度（0.22 的深色晕染，已经相当明显，不建议再高） */
+const PAPER_GRAIN_MAX_STRENGTH = 1;
+
+/** 噪点做旧色（深褐：老纸被日光晒过的暗沉） */
+const PAPER_GRAIN_DARK = "52, 40, 28";
+
+/** 渍斑做旧色（比噪点更黄一些：茶水渍 / 霉斑的观感） */
+const PAPER_GRAIN_STAIN = "96, 76, 46";
+
+/** 纤维高光色（很淡的米白：纸张纤维的受光面） */
+const PAPER_GRAIN_LIGHT = "214, 196, 158";
+
+/**
+ * 旧的纸叠加层配置（供外部在换纸张素材、切模式后强制重建）。
+ *
+ * 之所以要做成「模块级状态 + 显式设置」，与纸张贴图同一套理由：
+ * 整幅烘焙与局部重烘两处都要用到同一份纹理，若各自生成就必然对不上。
+ */
+export interface PaperGrainConfig {
+  /** 是否叠旧纸纹理 */
+  enabled: boolean;
+  /** 强度：0~1，越大越旧（0 与关闭等效） */
+  strength: number;
+}
+
+/** 当前叠加层配置（默认开启、很轻） */
+const paperGrain: PaperGrainConfig = { enabled: true, strength: DEFAULT_PAPER_GRAIN_STRENGTH };
+
+/** 噪点贴图缓存（强度变了要重建，因为透明度是烘进贴图的） */
+let grainNoiseCache: HTMLCanvasElement | null = null;
+
+/** 渍斑 / 折痕贴图缓存 */
+let grainMarkCache: HTMLCanvasElement | null = null;
+
+/**
+ * 设置旧纸叠加层（开关与强度）。
+ *
+ * 强度只影响贴图的不透明度，因此**强度变化时必须丢掉两份贴图缓存**，
+ * 否则画面会继续用旧强度的纹理（调用方还得重烘手绘位图，见 `MapLayerStore.invalidateHandDrawn()`）。
+ *
+ * @param config 开关与强度（强度会被夹到 0~1）
+ */
+export function setPaperGrain(config: Partial<PaperGrainConfig>): void {
+  const nextStrength = clamp01(config.strength ?? paperGrain.strength);
+  if (nextStrength !== paperGrain.strength) {
+    grainNoiseCache = null;
+    grainMarkCache = null;
+  }
+  paperGrain.enabled = config.enabled ?? paperGrain.enabled;
+  paperGrain.strength = nextStrength;
+}
+
+/**
+ * 当前旧纸叠加层配置。
+ * @returns 开关与强度（返回副本，避免外部直接改内部状态）
+ */
+export function currentPaperGrain(): PaperGrainConfig {
+  return { enabled: paperGrain.enabled, strength: paperGrain.strength };
+}
+
+/**
+ * 把强度映射成实际使用的不透明度。
+ *
+ * 为什么分段而不是线性：噪点是**高频**细节，放大后会变得刺眼，
+ * 所以它的上限压得比渍斑低；渍斑是低频的，可以稍重一点才看得出「旧」。
+ *
+ * @param strength 强度（0~1）
+ * @returns 噪点 / 渍斑 / 折痕三者的不透明度
+ */
+export function resolveGrainAlphas(strength: number): { noise: number; stain: number; crease: number } {
+  const value = clamp01(strength);
+  return {
+    noise: value * 0.11,
+    stain: value * 0.16,
+    crease: value * 0.2,
+  };
+}
+
+/**
+ * 算颗粒贴图的平铺相位：返回「贴图原点在画布坐标系里的位置」。
+ *
+ * **局部重烘与整幅一致的关键就在这里**：贴图相位必须锚定在**白板原点**上，
+ * 于是同一个世界坐标无论在整幅烘焙还是任意局部重烘里，都采样到贴图的同一处。
+ * 若相位锚到「区域原点」，同一块区域在不同烘焙路径下会套上不同相位的斑点，
+ * 撤销一笔之后画面上会浮出一块颜色不一样的补丁（肉眼最难定位的一类错位）。
+ *
+ * 推导（调用方 `bakeRegionInto` 先把画布原点移到区域左上角，
+ * 画布坐标 = 世界坐标 − 区域原点，且 `drawPaperGrain` 用**世界坐标**调 `fillRect`）：
+ *
+ * ```
+ * 画布上的绘制原点 P = fillRect 的 left + origin.x
+ * 要让采样落回世界坐标 left，需要 P 与 left 同相 ⇒ origin.x = left（把画面平移补回来一次）
+ * ```
+ *
+ * 三个候选值里只有 `+offset` 满足「相位与区域无关」：
+ * - `0`：P = left，但相位里少补了一次，采样点随区域原点漂移
+ * - `-offset`：P = left − offset，双重平移，漂移量再翻一倍（早期版本就是这个 bug）
+ * - `+offset`：P = left + offset ≡ left (mod tile)，✅ 与区域无关
+ *
+ * @param offsetX 区域左上角在世界坐标里的 x
+ * @param offsetY 区域左上角在世界坐标里的 y
+ * @returns 贴图原点的补偿量
+ */
+export function grainPatternOrigin(offsetX: number, offsetY: number): { x: number; y: number } {
+  return { x: 0, y: 0 };
+}
+
+/**
+ * 纸张纹理类的「被借用的画布」。
+ *
+ * 旧纸叠加层只需要"有宽高、能 `createPattern`"这一点能力，
+ * 因此绘制入口接受这个最小接口而不是写死 `HTMLCanvasElement`：
+ * 浏览器里传真实画布，测试里传记录型替身，两边走同一条代码路径。
+ */
+export type PaperTexture = CanvasImageSource & { width: number; height: number };
+
+/**
+ * 纹理画布工厂签名。
+ *
+ * 抽成参数有两个好处：
+ * 1. 受限环境（纯逻辑测试 / SSR）里能换成替身，于是"相位是否一致"这类结论可以被自动化验证
+ * 2. 纹理生成本身只依赖这一个 DOM 出口，将来换 `OffscreenCanvas` 只改默认实现
+ *
+ * @param width 画布宽
+ * @param height 画布高
+ * @returns 画布（真实 `HTMLCanvasElement` 或测试替身）
+ */
+export type TextureCanvasFactory = (width: number, height: number) => HTMLCanvasElement;
+
+/** 默认工厂：真实画布；没有 DOM 时给一个只有尺寸的占位（`getContext` 为空 → 空贴图） */
+const defaultTextureCanvas: TextureCanvasFactory = (width, height) => {
+  if (typeof document === "undefined") {
+    return { width, height, getContext: () => null } as unknown as HTMLCanvasElement;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+};
+
+/**
+ * 生成颗粒噪点贴图（程序化、确定性）。
+ *
+ * 确定性靠 `hash2d`：同一个世界坐标永远得到同一颗噪点，
+ * 于是同一格在整幅烘焙、局部重烘、导出图片里长得完全一样（用 `Math.random()` 会每次重绘都变）。
+ *
+ * @param strength 强度（0~1）
+ * @param size 贴图边长（默认 `PAPER_GRAIN_NOISE_SIZE`；测试传小值，免得为了验证生成 5 万颗噪点）
+ * @param createCanvas 画布工厂（测试注入替身用）
+ * @returns 可平铺的噪点贴图画布；无 DOM 或强度不足时是空贴图（调用方无需判空）
+ */
+export function createGrainNoiseTexture(
+  strength: number,
+  size = PAPER_GRAIN_NOISE_SIZE,
+  createCanvas: TextureCanvasFactory = defaultTextureCanvas,
+): HTMLCanvasElement {
+  const canvas = createCanvas(size, size);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return canvas;
+  }
+  const { noise } = resolveGrainAlphas(strength);
+  if (noise <= 0) {
+    return canvas;
+  }
+  // 暗点与亮点都用 1px 方块：接近纸张纤维在高倍视图下的样子
+  const total = size * size * 0.2;
+  for (let i = 0; i < total; i += 1) {
+    // 用序号反推格子坐标，再用哈希决定偏移量与颜色，避免调用随机数
+    const cellX = i % size;
+    const cellY = Math.floor(i / size);
+    const x = (cellX + hash2d(cellX, cellY, 11)) % size;
+    const y = (cellY + hash2d(cellX, cellY, 13)) % size;
+    const light = hash2d(cellX, cellY, 17) > 0.72;
+    context.fillStyle = light
+      ? `rgba(${PAPER_GRAIN_LIGHT}, ${(noise * 0.6).toFixed(3)})`
+      : `rgba(${PAPER_GRAIN_DARK}, ${noise.toFixed(3)})`;
+    context.fillRect(Math.floor(x), Math.floor(y), 1, 1);
+  }
+  return canvas;
+}
+
+/**
+ * 生成渍斑与折痕贴图（程序化、确定性）。
+ *
+ * 一个贴图单元里排布：
+ * - 3 块极淡的深色晕染（径向渐变，边缘柔和，模仿茶渍 / 霉斑）
+ * - 1 道横贯的折痕：左边缘的一个点 → 中间控制点 → 右边缘的一个点，
+ *   再用「深线 + 略偏移的浅线」描两遍，得到纸张被折过又摊开的明暗感
+ *
+ * @param strength 强度（0~1）
+ * @param cell 贴图边长（世界像素，默认 `PAPER_GRAIN_MARK_SIZE`）
+ * @param createCanvas 画布工厂（测试注入替身用）
+ * @returns 可平铺的渍斑贴图画布；无 DOM 或强度不足时是空贴图
+ */
+export function createGrainMarkTexture(
+  strength: number,
+  cell = PAPER_GRAIN_MARK_SIZE,
+  createCanvas: TextureCanvasFactory = defaultTextureCanvas,
+): HTMLCanvasElement {
+  const canvas = createCanvas(cell, cell);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return canvas;
+  }
+  const { stain, crease } = resolveGrainAlphas(strength);
+  if (stain <= 0 && crease <= 0) {
+    return canvas;
+  }
+
+  // 渍斑：每格 3 块，位置与大小都来自哈希，半径 60~170（低频、跨格可见）
+  for (let i = 0; i < 3; i += 1) {
+    const cx = hash2d(i, 1, 23) * cell;
+    const cy = hash2d(i, 2, 29) * cell;
+    const radius = 60 + hash2d(i, 3, 31) * 110;
+    const gradient = context.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    gradient.addColorStop(0, `rgba(${PAPER_GRAIN_STAIN}, ${stain.toFixed(3)})`);
+    gradient.addColorStop(0.55, `rgba(${PAPER_GRAIN_STAIN}, ${(stain * 0.45).toFixed(3)})`);
+    gradient.addColorStop(1, `rgba(${PAPER_GRAIN_STAIN}, 0)`);
+    context.fillStyle = gradient;
+    context.beginPath();
+    context.arc(cx, cy, radius, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  // 折痕：从左右两边缘各取一个哈希点，中间控制点带一点弯，避免看着像手画的直线
+  const leftY = hash2d(1, 7, 37) * cell;
+  const rightY = hash2d(2, 7, 41) * cell;
+  const controlX = cell * 0.5;
+  const controlY = (leftY + rightY) / 2 + (hash2d(3, 7, 43) - 0.5) * cell * 0.18;
+  context.lineWidth = 1.4;
+  context.strokeStyle = `rgba(${PAPER_GRAIN_DARK}, ${crease.toFixed(3)})`;
+  context.beginPath();
+  context.moveTo(0, leftY);
+  context.quadraticCurveTo(controlX, controlY, cell, rightY);
+  context.stroke();
+  // 折痕的受光侧：向上偏移 1px 画一条更淡的线，形成「一道亮痕」
+  context.lineWidth = 1;
+  context.strokeStyle = `rgba(${PAPER_GRAIN_LIGHT}, ${(crease * 0.4).toFixed(3)})`;
+  context.beginPath();
+  context.moveTo(0, leftY - 1);
+  context.quadraticCurveTo(controlX, controlY - 1, cell, rightY - 1);
+  context.stroke();
+
+  return canvas;
+}
+
+/**
+ * 取颗粒噪点贴图（惰性生成并缓存；强度变了由 `setPaperGrain` 清缓存）。
+ * @param createCanvas 画布工厂（测试注入替身用）
+ * @returns 噪点贴图；关闭或强度不足时返回 null
+ */
+function grainNoiseTexture(createCanvas: TextureCanvasFactory): HTMLCanvasElement | null {
+  if (!paperGrain.enabled || paperGrain.strength < PAPER_GRAIN_MIN_STRENGTH) {
+    return null;
+  }
+  grainNoiseCache ??= createGrainNoiseTexture(paperGrain.strength, PAPER_GRAIN_NOISE_SIZE, createCanvas);
+  return grainNoiseCache;
+}
+
+/**
+ * 取渍斑 / 折痕贴图（惰性生成并缓存）。
+ * @param createCanvas 画布工厂（测试注入替身用）
+ * @returns 渍斑贴图；关闭或强度不足时返回 null
+ */
+function grainMarkTexture(createCanvas: TextureCanvasFactory): HTMLCanvasElement | null {
+  if (!paperGrain.enabled || paperGrain.strength < PAPER_GRAIN_MIN_STRENGTH) {
+    return null;
+  }
+  grainMarkCache ??= createGrainMarkTexture(paperGrain.strength, PAPER_GRAIN_MARK_SIZE, createCanvas);
+  return grainMarkCache;
+}
+
+/**
+ * 把旧纸叠加层铺到纸张底之上（**只作用于手绘模式的纸张，不进数据层**）。
+ *
+ * 调用约定与 `fillPaperRegion` 一致：目标上下文已经把坐标移到了区域左上角，
+ * 因此这里要传 `offsetX/offsetY`（区域原点的世界坐标），
+ * 由 `grainPatternOrigin()` 把相位锚回白板原点 —— 局部重烘才能和整幅对得上。
+ *
+ * @param context 目标上下文（坐标系已移到区域左上角）
+ * @param left 区域左（世界像素）
+ * @param top 区域上
+ * @param width 区域宽
+ * @param height 区域高
+ * @param offsetX 区域左上角的世界 x
+ * @param offsetY 区域左上角的世界 y
+ * @param createCanvas 画布工厂（测试注入替身用；正常调用不必传）
+ */
+export function drawPaperGrain(
+  context: CanvasRenderingContext2D,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  offsetX: number,
+  offsetY: number,
+  createCanvas: TextureCanvasFactory = defaultTextureCanvas,
+): void {
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+  const passRect = { left, top, width, height };
+  const passes: { texture: HTMLCanvasElement | null }[] = [
+    { texture: grainNoiseTexture(createCanvas) },
+    { texture: grainMarkTexture(createCanvas) },
+  ];
+  for (const pass of passes) {
+    if (!pass.texture) {
+      continue;
+    }
+    // 贴图是标准的画布（可作 CanvasImageSource）；断言只为让类型收窄，运行时就是画布本身
+    const pattern = context.createPattern(pass.texture as unknown as CanvasImageSource, "repeat");
+    if (!pattern) {
+      continue;
+    }
+    const origin = grainPatternOrigin(offsetX, offsetY);
+    context.save();
+    context.translate(origin.x, origin.y);
+    context.fillStyle = pattern;
+    context.fillRect(passRect.left, passRect.top, passRect.width, passRect.height);
+    context.restore();
+  }
+}
+
+/**
+ * 把数值夹到 0~1。
+ * @param value 输入
+ * @returns 0~1 之间的值
+ */
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * 地名标注**不用**手写体时的字体栈（与主题默认值同源）。
+ *
+ * 放在渲染层是为了让「导出图片」这条不经过 React 的路径也能拿到同一个字体栈：
+ * 导出的地名与屏幕上看到的不该是两种字体。
+ */
+export const DEFAULT_LABEL_FONT_STACK = '"Source Han Sans SC", "Noto Sans SC", sans-serif';
+
+/**
+ * 拼一条地名标注的 `context.font` 规格。
+ *
+ * 屏幕绘制与导出图片共用这一个入口，避免「画布上手写体、导出的还是无衬线体」这种不一致。
+ * 绘制文字前**必须**先设置 `context.font`，本函数只负责拼规格，不改上下文。
+ *
+ * @param sizePx 字号（像素）
+ * @param handwriting 是否用手写体（对应 `MapEditorProps.labelsHandwriting`）
+ * @param systemFontHand 宿主主题里的系统楷体栈（不传则用内置默认值）
+ * @param systemFontSans 宿主主题里的无衬线栈（不传则用内置默认值）
+ * @returns 可直接赋给 `context.font` 的字符串
+ */
+export function labelFont(
+  sizePx: number,
+  handwriting: boolean,
+  systemFontHand = DEFAULT_LABEL_FONT_STACK,
+  systemFontSans = DEFAULT_LABEL_FONT_STACK,
+): string {
+  // 关键：不是 `handwriting ? 手写体 : 无衬线体` 二选一，而是「手写体栈本身以楷体打头」。
+  // 手写模式仍要能显示数字与符号，所以两种模式都给完整字体栈，由浏览器逐个回退。
+  const family = handwriting ? resolveHandwritingStack(systemFontHand) : resolveHandwritingStack(systemFontSans);
+  return buildFontSpec(sizePx, family);
 }
 
 /**
@@ -715,11 +1141,17 @@ function drawHatch(context: CanvasRenderingContext2D, cell: number): void {
 
 /**
  * 把整幅索引栅格「烘」成一张手绘风格位图。
+ *
+ * 产物是**渲染层缓存**（纸张 + 旧纸纹理 + 图案 + 描边 + 装饰），
+ * 与数据层无关：索引数组自始至终是 1 字节/格，烘出来的是随时可重算的观感。
+ *
  * @param indices 全幅索引栅格
  * @param width 白板宽
  * @param height 白板高
  * @param palette 调色板
  * @param paper 纸张贴图
+ * @param symbolStyle 装饰符号画风（默认 `modern` 程序化绘制；`antique` 用古地图木刻符号）
+ * @param createCanvas 纹理画布工厂（测试注入替身用；正常调用不必传）
  * @returns 手绘风格位图
  */
 export function bakeHandDrawnLayer(
@@ -728,13 +1160,15 @@ export function bakeHandDrawnLayer(
   height: number,
   palette: TerrainBrush[],
   paper: HTMLCanvasElement,
+  symbolStyle: SymbolStyle = "modern",
+  createCanvas: TextureCanvasFactory = defaultTextureCanvas,
 ): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d");
   if (context) {
-    bakeRegionInto(context, indices, width, height, { x: 0, y: 0, width, height }, palette, paper);
+    bakeRegionInto(context, indices, width, height, { x: 0, y: 0, width, height }, palette, paper, symbolStyle, createCanvas);
   }
   return canvas;
 }
@@ -753,6 +1187,11 @@ interface Region {
  * 局部重烘是撤销 / 重做的性能关键：整幅重烘一张 2048 宽的手绘位图要几百毫秒，
  * 而一笔通常只覆盖很小一块。
  *
+ * **一致性保证**：区域内所有内容都按世界坐标生成 ——
+ * 纸张图案相位锚白板原点（`fillPaperRegion`）、旧纸纹理相位锚白板原点（`drawPaperGrain`
+ * 配合 `grainPatternOrigin`）、装饰按世界网格取哈希（`drawDecorations`）。
+ * 因此把同一块区域单独重烘任意多次，结果都与整幅烘焙时该区域的像素一致。
+ *
  * @param context 目标上下文（已对应到画布坐标系）
  * @param indices 全幅索引栅格
  * @param boardWidth 白板宽
@@ -760,6 +1199,8 @@ interface Region {
  * @param region 要重烘的区域
  * @param palette 调色板
  * @param paper 纸张贴图
+ * @param symbolStyle 装饰符号画风（默认 `modern`；`antique` 走古地图素材，缺素材时自动回退）
+ * @param createCanvas 纹理画布工厂（测试注入替身用；正常调用不必传）
  */
 export function bakeRegionInto(
   context: CanvasRenderingContext2D,
@@ -769,6 +1210,8 @@ export function bakeRegionInto(
   region: Region,
   palette: TerrainBrush[],
   paper: HTMLCanvasElement,
+  symbolStyle: SymbolStyle = "modern",
+  createCanvas: TextureCanvasFactory = defaultTextureCanvas,
 ): void {
   const left = Math.max(0, Math.floor(region.x));
   const top = Math.max(0, Math.floor(region.y));
@@ -786,8 +1229,16 @@ export function bakeRegionInto(
   context.rect(left, top, runWidth, bottom - top);
   context.clip();
 
-  // ① 纸张底：按当前铺法铺（平铺 / 整幅拉伸），并且只铺这一区域
-  fillPaperRegion(context, left, top, runWidth, bottom - top, boardWidth, boardHeight, left, top);
+  // ① 纸张底：按当前铺法铺（平铺 / 整幅拉伸），并且只铺这一区域。
+  // 把调用方注入的 `paper` 透传下去：渲染层传当前贴图，纯逻辑测试传替身，
+  // 于是「相位是否一致」这类结论可以在没有 DOM 的环境里被自动化验证
+  fillPaperRegion(context, left, top, runWidth, bottom - top, boardWidth, boardHeight, left, top, paper);
+
+  // ①′ 旧纸叠加层：颗粒噪点 + 渍斑 + 折痕。
+  // 只画在渲染用的位图上——数据层自始至终只有 1 字节/格的调色板下标，
+  // 素材细节无论多细都不会写回瓦片（否则用户一改涂色纹理就被弄花，调色板也装不下）。
+  // 相位锚定白板原点，局部重烘与整幅烘焙的斑点位置完全一致，详见 `grainPatternOrigin()`。
+  drawPaperGrain(context, left, top, runWidth, bottom - top, left, top, createCanvas);
 
   // ② 按地形图案填充：逐行成段扫描，减少 fillRect 次数
   const patternCache = new Map<number, CanvasPattern | null>();
@@ -846,7 +1297,7 @@ export function bakeRegionInto(
   }
 
   // ④ 装饰散布（确定性哈希：同一格永远同一种装饰）
-  drawDecorations(context, indices, boardWidth, boardHeight, left, top, right, bottom);
+  drawDecorations(context, indices, boardWidth, boardHeight, left, top, right, bottom, symbolStyle);
   context.restore();
 }
 
@@ -860,6 +1311,7 @@ export function bakeRegionInto(
  * @param top 区域上
  * @param right 区域右
  * @param bottom 区域下
+ * @param symbolStyle 装饰符号画风（透传给 `drawDecoration`）
  */
 function drawDecorations(
   context: CanvasRenderingContext2D,
@@ -870,6 +1322,7 @@ function drawDecorations(
   top: number,
   right: number,
   bottom: number,
+  symbolStyle: SymbolStyle,
 ): void {
   // 装饰按世界坐标的固定网格生成：即使只重烘一小块，位置也与整幅一致
   const range = decorationRange(left, top, right - left, bottom - top, boardWidth, boardHeight, DECORATION_CELL_PX);
@@ -897,19 +1350,27 @@ function drawDecorations(
       if (!instance) {
         continue;
       }
-      drawDecoration(context, instance.kind, instance.x, instance.y, instance.scale, style.stroke);
+      drawDecoration(context, instance.kind, instance.x, instance.y, instance.scale, style.stroke, symbolStyle);
     }
   }
 }
 
 /**
  * 画一个装饰符号。
+ *
+ * 两种画风共用这一个出口：
+ * - `antique`：先试古地图素材（`symbols.ts` 的 `drawDecorationSymbol`），
+ *   它返回 false（素材没打进来 / 环境不支持 `Path2D`）时**必须**回退到下面的程序化绘制——
+ *   回退不是保险，而是硬要求：素材缺失时画面不能留空
+ * - `modern`：直接走程序化绘制
+ *
  * @param context 目标上下文
  * @param kind 符号类型
  * @param x 世界 x
  * @param y 世界 y
  * @param scale 尺寸系数
  * @param ink 墨色
+ * @param symbolStyle 画风（默认 `modern`，与旧调用方的行为一致）
  */
 export function drawDecoration(
   context: CanvasRenderingContext2D,
@@ -918,7 +1379,18 @@ export function drawDecoration(
   y: number,
   scale: number,
   ink: string,
+  symbolStyle: SymbolStyle = "modern",
 ): void {
+  if (symbolStyle === "antique") {
+    // ⚠️ 传的是**最终边长**：`drawDecorationSymbol` 不会再乘 scale，
+    // 所以这里必须先把基尺寸乘上尺寸系数
+    const drawn = drawDecorationSymbol(context, symbolStyle, kind, x, y, SYMBOL_BASE_SIZE * scale, ink);
+    if (drawn) {
+      return;
+    }
+    // 没画成 → 落到下面的程序化绘制，绝不留空
+  }
+
   const size = 7 * scale;
   context.strokeStyle = ink;
   context.beginPath();

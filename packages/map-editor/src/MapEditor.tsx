@@ -48,6 +48,12 @@ import {
 import { createHistoryBaseline, HistoryStack } from "./history";
 import { exportBoardImage, downloadBlob } from "./export-image";
 import { GlobeView } from "./gl/GlobeView";
+import {
+  DEFAULT_HANDWRITING_TIMEOUT_MS,
+  ensureHandwritingFont,
+  resolveHandwritingStack,
+  type HandwritingStatus,
+} from "./handwriting-font";
 import { MapLayerStore } from "./layer-store";
 import { LayerPanel } from "./panels/LayerPanel";
 import { MarkerStore, type CanvasMarker } from "./marker-store";
@@ -56,13 +62,19 @@ import { describeResize, normalizeBoardWidth, resampleNearest } from "./resize";
 import {
   applyPaperTexture,
   bakeHandDrawnLayer,
+  currentPaperGrain,
   currentPaperTexture,
+  DEFAULT_PAPER_GRAIN_STRENGTH,
+  labelFont,
   paperBaseColor,
   paperIsLight,
+  setPaperGrain,
   type RenderStyleMode,
 } from "./terrain-render";
 import { RasterTileStore, TILE_SIZE, tileRangeOf, type PixelRect } from "./tile-store";
+import type { SymbolStyle } from "./terrain-style";
 import { resolveTheme, themeToCssVars } from "./theme";
+import { TOOL_ICONS, type ToolIconName } from "./toolbar-icons";
 
 /**
  * 缩放范围：适应窗口 ~ 32×，自由连续（方案 §5.6.1，具体值可由宿主偏好覆盖）。
@@ -194,6 +206,32 @@ export function MapEditor(props: MapEditorProps) {
    * 画布上的比例尺与测量读数要按它反着配色，否则亮底配浅字看不清。
    */
   const [paperLight, setPaperLight] = useState(false);
+  /**
+   * 旧纸叠加层（颗粒噪点 / 渍斑 / 折痕）的开关。
+   *
+   * 做成组件状态而不是只读 props：用户能随时关掉对比效果，
+   * 而改了它必须**重烘手绘位图**（纹理是烘进位图里的），见下面那个 effect。
+   */
+  const [paperGrain, setPaperGrainEnabled] = useState(() => props.paperGrain ?? true);
+  /** 旧纸叠加层强度（默认很轻；0 与关闭等效） */
+  const [grainStrength] = useState(() => props.paperGrainStrength ?? DEFAULT_PAPER_GRAIN_STRENGTH);
+  /**
+   * 装饰符号的画风（古地图木刻 / 简洁现代程序化绘制）。
+   *
+   * 做成组件状态而不是只读 props：用户能随时切着对比，而 props 只给**初值**。
+   * 切换是纯观感操作——数据层只有 1 字节/格的调色板下标，不受影响。
+   * 默认取 `antique`：主站配的是羊皮纸素材，木刻符号更配（见 `MapEditorProps.symbolStyle`）。
+   */
+  const [symbolStyle, setSymbolStyleState] = useState<SymbolStyle>(() => props.symbolStyle ?? "antique");
+  /**
+   * 地名是否用手写体（楷体 / 手写字体栈）。
+   *
+   * 只影响**渲染**：画布上的地名标注、测量读数、比例尺与标记列表，
+   * 不动数据层（数据层永远只有 1 字节/格的调色板下标）。
+   */
+  const [labelsHandwriting, setLabelsHandwriting] = useState(() => props.labelsHandwriting ?? false);
+  /** 手写字体加载状态：`loading` 时界面给提示，`fallback` 时说明已降级到系统楷体 */
+  const [handwritingStatus, setHandwritingStatus] = useState<HandwritingStatus>("idle");
   /** 白板改尺寸面板与输入 */
   const [resizeOpen, setResizeOpen] = useState(false);
   const [resizeWidth, setResizeWidth] = useState(2048);
@@ -210,6 +248,8 @@ export function MapEditor(props: MapEditorProps) {
   const radiusKmRef = useRef(6371);
   /** 渲染风格的最新值（给不随它重建的回调读） */
   const renderStyleRef = useRef<RenderStyleMode>("handdrawn");
+  /** 装饰符号画风的最新值（导出等回调读它，避免闭包过期） */
+  const symbolStyleRef = useRef<SymbolStyle>(props.symbolStyle ?? "antique");
   /** 经纬网档位的最新值（渲染循环不因它重建，只靠重渲染读最新值） */
   const gridChoiceRef = useRef(0);
   gridChoiceRef.current = gridChoice;
@@ -229,6 +269,7 @@ export function MapEditor(props: MapEditorProps) {
   metaRef.current = meta;
   radiusKmRef.current = radiusKm;
   renderStyleRef.current = renderStyle;
+  symbolStyleRef.current = symbolStyle;
 
   /**
    * 加载宿主提供的纸张素材（羊皮纸等）。
@@ -259,6 +300,97 @@ export function MapEditor(props: MapEditorProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paperTextureUrl, props.paperFill, props.paperTextureTileSize, meta]);
+
+  /**
+   * 应用旧纸叠加层的开关与强度，并在变化后重烘手绘位图。
+   *
+   * 为什么必须重烘：叠加层是**烘进手绘位图**的（与纸张、图案、描边一起），
+   * 只改配置而不重烘，画面会继续显示旧强度的纹理 —— 表现为"改了没反应"。
+   *
+   * 设置放模块级而不是 props：`bakeRegionInto`（局部重烘）也必须拿到同一份配置，
+   * 否则撤销一笔之后新烘出来的那一块会和周围对不上。
+   */
+  useEffect(() => {
+    setPaperGrain({ enabled: paperGrain, strength: grainStrength });
+    const layerStore = layerStoreRef.current;
+    if (layerStore) {
+      layerStore.invalidateHandDrawn();
+      layerStore.redrawAllRenderBitmaps();
+    }
+    setHistoryTick((tick) => tick + 1);
+  }, [paperGrain, grainStrength]);
+
+  /**
+   * 应用装饰符号画风，并在切换后重烘手绘位图。
+   *
+   * 为什么必须重烘：符号是**烘进手绘位图**里的（与纸张、图案、描边一起），
+   * 只改配置而不重烘，画面会继续显示旧画风的符号——表现为"切了没反应"。
+   *
+   * 为什么这个 effect 依赖 `meta`：`layerStore` 是在载入元信息之后才建出来的，
+   * 若只在挂载时设置一次，首次渲染就赶不上（那时 store 还是 null）——
+   * 表现为"默认古地图却画的是程序化符号"。带上 `meta` 就能在 store 就绪后补上。
+   */
+  useEffect(() => {
+    const layerStore = layerStoreRef.current;
+    if (!layerStore) {
+      return;
+    }
+    // setSymbolStyle 只在画风真的变化时才清缓存，因此这里可以放心重复调用
+    if (layerStore.setSymbolStyle(symbolStyle)) {
+      layerStore.redrawAllRenderBitmaps();
+      setHistoryTick((tick) => tick + 1);
+    }
+  }, [symbolStyle, meta]);
+
+  /**
+   * 切换装饰符号画风（古地图木刻 ↔ 简洁现代程序化绘制）。
+   *
+   * 纯观感：不写瓦片、不标脏、不清空用户内容，也不触发保存 / 草稿。
+   * 实际的重烘交给上面那个 effect（它同时负责"store 就绪后补设"这一种情况）。
+   */
+  const handleToggleSymbolStyle = useCallback((): void => {
+    setSymbolStyleState((current) => (current === "antique" ? "modern" : "antique"));
+  }, []);
+
+  /**
+   * 按需加载自带手写字体（仅在用户开启「手写地名」且宿主给了地址时才请求）。
+   *
+   * 三条纪律：
+   * ① 默认不请求 —— 完整中文字体动辄数 MB，不能因为用户打开编辑器就下载
+   * ② 可降级 —— 地址失效 / 超时（默认 8 秒）/ 浏览器不支持，都静默回退系统楷体
+   * ③ 不阻塞界面 —— 加载状态通过 `onHandwritingFontStateChange` 上报，界面照常可用
+   *
+   * 加载成功后把 `handwritingTick` 加一：画布上的地名要重画一遍才用得上新字体。
+   */
+  useEffect(() => {
+    if (!labelsHandwriting || !props.handwritingFontUrl) {
+      setHandwritingStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    setHandwritingStatus("loading");
+    void (async () => {
+      const status = await ensureHandwritingFont(
+        props.handwritingFontUrl as string,
+        props.handwritingFontTimeoutMs ?? DEFAULT_HANDWRITING_TIMEOUT_MS,
+      );
+      if (cancelled) {
+        return;
+      }
+      setHandwritingStatus(status);
+      setHistoryTick((tick) => tick + 1);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelsHandwriting, props.handwritingFontUrl, props.handwritingFontTimeoutMs]);
+
+  /** 字体状态上报宿主：宿主据此决定是否提示、重试或换成别的字体地址 */
+  useEffect(() => {
+    props.onHandwritingFontStateChange?.(handwritingStatus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handwritingStatus]);
 
   /**
    * 更新光标处的尺度读数（经纬度、每像素实距、横向变形倍率）。
@@ -669,6 +801,12 @@ export function MapEditor(props: MapEditorProps) {
     const cssHeight = canvas.height / dpr;
     const { zoom, offsetX, offsetY } = viewport;
 
+    // 地名 / 标注用的字体栈：开「手写地名」时用楷体栈（若宿主提供了字体文件且加载成功，
+    // 手写字体族会被自动排到最前面）；否则与主题无衬线体一致。
+    // 三种字号（地名 12 / 读数 12 / 比例尺 11）都从这里取，保证与导出图片用同一套字体。
+    const labelFontOf = (sizePx: number): string =>
+      labelFont(sizePx, labelsHandwriting, theme.fontHand, theme.fontSans);
+
     context.save();
     // 底色：手绘模式下白板之外露出的应是纸张色（否则深色底会把手绘画面割裂开）。
     // 用纸张的代表色而不是常量：宿主换了浅色纸张素材后，四周才不会留一圈深色
@@ -761,7 +899,7 @@ export function MapEditor(props: MapEditorProps) {
         context.stroke();
 
         if (selected || zoom >= 1) {
-          context.font = '12px "Source Han Sans SC", "Noto Sans SC", sans-serif';
+          context.font = labelFontOf(12);
           context.textBaseline = "bottom";
           context.fillStyle = "#14120f";
           const textWidth = context.measureText(marker.label || "标记").width;
@@ -813,7 +951,7 @@ export function MapEditor(props: MapEditorProps) {
             ? `${formatDistance(measureResult.polylineKm)} · 方位 ${Math.round(measureResult.directBearing)}°`
             : "";
         if (label) {
-          context.font = '12px "Source Han Sans SC", "Noto Sans SC", sans-serif';
+          context.font = labelFontOf(12);
           const textWidth = context.measureText(label).width;
           // 底板用纸张色、文字按纸张明暗反色：浅底浅字会看不清（踩过这个坑）
           context.fillStyle = paperLight ? "#f6efdff0" : `${paperBaseColor()}f0`;
@@ -841,14 +979,14 @@ export function MapEditor(props: MapEditorProps) {
         context.fillRect(x0 - 4, y0 - barHeight - 10, Math.max(bar.pixels, 40) + 8, barHeight + 10);
         context.fillStyle = theme.accent;
         context.fillRect(x0, y0 - barHeight, bar.pixels, barHeight);
-        context.font = '11px "Source Han Sans SC", "Noto Sans SC", sans-serif';
+        context.font = labelFontOf(11);
         context.fillStyle = paperLight ? "#2b2118" : theme.text;
         context.fillText(formatDistance(bar.kilometers), x0, y0 - barHeight - 2);
       }
     }
 
     context.restore();
-  }, [viewport, theme, meta, historyTick, saveState, markerTick, measurePoints, measurePending, measureResult, radiusKm, paperLight, gridChoice]);
+  }, [viewport, theme, meta, historyTick, saveState, markerTick, measurePoints, measurePending, measureResult, radiusKm, paperLight, gridChoice, labelsHandwriting]);
 
   /** 屏幕坐标 → 世界像素 */
   const toWorld = useCallback((screenX: number, screenY: number): { x: number; y: number } => {
@@ -1108,8 +1246,14 @@ export function MapEditor(props: MapEditorProps) {
         includeScaleBar: true,
         radiusKm,
         styleMode: renderStyleRef.current,
+        // 符号画风跟随屏幕：导出图不该出现「屏幕上木刻符号、导出的却是程序化符号」
+        symbolStyle: symbolStyleRef.current,
         // 导出用当前生效的纸张（宿主给了羊皮纸素材时，导出图也该是羊皮纸）
         paper: currentPaperTexture(),
+        // 地名字体与屏幕所见一致：导出图上的比例尺不该突然变回无衬线体
+        labelFontFamily: labelsHandwriting
+          ? resolveHandwritingStack(theme.fontHand)
+          : resolveHandwritingStack(theme.fontSans),
       });
       const extension = result.mimeType === "image/png" ? "png" : "webp";
       const blob = result.blob;
@@ -1125,7 +1269,7 @@ export function MapEditor(props: MapEditorProps) {
       setExporting(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapId, radiusKm, props.onExport, props.onError]);
+  }, [mapId, radiusKm, props.onExport, props.onError, labelsHandwriting, theme]);
 
   /**
    * 合成所有可见栅格图层，供 3D 地球仪当贴图用。
@@ -1887,31 +2031,31 @@ export function MapEditor(props: MapEditorProps) {
         <ToolButton
           theme={theme}
           active={brush.tool === "brush"}
-          label="笔刷 (B)"
+          icon="brush" label="笔刷 (B)"
           onClick={() => setBrush((current) => ({ ...current, tool: "brush" }))}
         />
         <ToolButton
           theme={theme}
           active={brush.tool === "eraser"}
-          label="橡皮 (E)"
+          icon="eraser" label="橡皮 (E)"
           onClick={() => setBrush((current) => ({ ...current, tool: "eraser" }))}
         />
         <ToolButton
           theme={theme}
           active={brush.tool === "picker"}
-          label="吸管 (I)"
+          icon="picker" label="吸管 (I)"
           onClick={() => setBrush((current) => ({ ...current, tool: "picker" }))}
         />
         <ToolButton
           theme={theme}
           active={brush.tool === "pan"}
-          label="平移 (V)"
+          icon="pan" label="平移 (V)"
           onClick={() => setBrush((current) => ({ ...current, tool: "pan" }))}
         />
         <ToolButton
           theme={theme}
           active={brush.tool === "measure"}
-          label="测量"
+          icon="measure" label="测量"
           onClick={() => {
             setBrush((current) => ({ ...current, tool: "measure" }));
             clearMeasure();
@@ -1931,10 +2075,10 @@ export function MapEditor(props: MapEditorProps) {
         />
         <span style={{ fontSize: 12, color: theme.textFaint, minWidth: 32 }}>{brush.screenSize}px</span>
         <span style={dividerStyle(theme)} />
-        <ToolButton theme={theme} label="撤销" disabled={!canUndo} onClick={undo} />
-        <ToolButton theme={theme} label="重置画布" disabled={!canReset} onClick={resetCanvas} />
+        <ToolButton theme={theme} icon="undo" label="撤销" disabled={!canUndo} onClick={undo} />
+        <ToolButton theme={theme} icon="reset" label="重置画布" disabled={!canReset} onClick={resetCanvas} />
         <span style={dividerStyle(theme)} />
-        <ToolButton theme={theme} label="适应" onClick={handleFit} />
+        <ToolButton theme={theme} icon="fit" label="适应" onClick={handleFit} />
         <ToolButton
           theme={theme}
           active={viewMode === "3d"}
@@ -1951,19 +2095,64 @@ export function MapEditor(props: MapEditorProps) {
         <ToolButton
           theme={theme}
           active={fullscreen}
+          icon="fullscreen"
           label={fullscreen ? "退出全屏" : "全屏"}
           onClick={() => setFullscreen((value) => !value)}
         />
         <ToolButton
           theme={theme}
           active={renderStyle === "handdrawn"}
+          icon={renderStyle === "handdrawn" ? "handdrawn" : "flat"}
           label={renderStyle === "handdrawn" ? "手绘图案" : "简约色块"}
           onClick={handleToggleRenderStyle}
+        />
+        <ToolButton
+          theme={theme}
+          active={paperGrain}
+          label="旧纸纹理"
+          title="在手绘纸张上叠一层程序化生成的老纸细节（颗粒 / 渍斑 / 折痕），只影响观感，不改动任何数据"
+          onClick={() => setPaperGrainEnabled((value) => !value)}
+        />
+        <ToolButton
+          theme={theme}
+          active={symbolStyle === "antique"}
+          label={symbolStyle === "antique" ? "符号·古地图" : "符号·简洁"}
+          title={
+            symbolStyle === "antique"
+              ? "装饰符号用古地图木刻线条素材（山 / 树 / 浪 / 丘），点一下换成简洁现代手绘"
+              : "装饰符号用程序化绘制的简洁现代手绘，点一下换成古地图木刻素材"
+          }
+          onClick={handleToggleSymbolStyle}
+        />
+        <ToolButton
+          theme={theme}
+          active={labelsHandwriting}
+          disabled={handwritingStatus === "loading"}
+          label={
+            handwritingStatus === "loading"
+              ? "字体加载中…"
+              : labelsHandwriting
+                ? handwritingStatus === "ready"
+                  ? "地名·手写体"
+                  : "地名·楷体"
+                : "地名·默认体"
+          }
+          title={
+            labelsHandwriting
+              ? handwritingStatus === "ready"
+                ? "地名用手写体（自带字体已就绪）"
+                : handwritingStatus === "loading"
+                  ? "手写字体正在加载，地图可照常编辑"
+                  : "地名用系统楷体（未提供字体文件或加载失败时自动降级）"
+              : "地名用默认无衬线体"
+          }
+          onClick={() => setLabelsHandwriting((value) => !value)}
         />
         {!readOnly && (
           <ToolButton
             theme={theme}
             active={markerMode}
+            icon="marker"
             label={markerMode ? "点地图放标记…" : "标记"}
             onClick={() => {
               setMarkerMode((value) => !value);
@@ -1975,10 +2164,11 @@ export function MapEditor(props: MapEditorProps) {
         <ToolButton
           theme={theme}
           active={statsOpen}
+          icon="stats"
           label="统计"
           onClick={() => (statsOpen ? setStatsOpen(false) : handleComputeStats())}
         />
-        <ToolButton theme={theme} active={radiusOpen} label="半径" onClick={() => setRadiusOpen((open) => !open)} />
+        <ToolButton theme={theme} icon="globe" active={radiusOpen} label="半径" onClick={() => setRadiusOpen((open) => !open)} />
         <ToolButton
           theme={theme}
           active={resizeOpen}
@@ -1988,6 +2178,7 @@ export function MapEditor(props: MapEditorProps) {
         {!readOnly && (
           <ToolButton
             theme={theme}
+            icon="export"
             label={exporting ? "导出中…" : "导出"}
             disabled={exporting}
             onClick={() => void handleExport()}
@@ -2462,6 +2653,8 @@ export function MapEditor(props: MapEditorProps) {
                       selectedMarkerIdRef.current === marker.id ? theme.accent : theme.textDim,
                     cursor: "pointer",
                     fontSize: 12,
+                    // 地名用手写体时，列表里的名称也跟着变——它是地名，不是界面文字
+                    fontFamily: labelsHandwriting ? theme.fontHand : theme.fontSans,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -2682,13 +2875,15 @@ function overlayStyle(theme: MapEditorTheme): React.CSSProperties {
 function ToolButton(props: {
   theme: MapEditorTheme;
   label: string;
+  /** 图标名（见 `toolbar-icons.ts`）：给了就在文字左侧画一个矢量图标 */
+  icon?: ToolIconName;
   active?: boolean;
   disabled?: boolean;
   /** 悬停说明（用于把「为什么是这个档位」讲清楚） */
   title?: string;
   onClick: () => void;
 }): React.ReactElement {
-  const { theme, label, active, disabled, title, onClick } = props;
+  const { theme, label, icon, active, disabled, title, onClick } = props;
   return (
     <button
       type="button"
@@ -2697,6 +2892,9 @@ function ToolButton(props: {
       title={title}
       style={{
         ...buttonStyle(theme),
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
         background: active ? theme.accent : "transparent",
         color: active ? "#14120f" : theme.text,
         borderColor: active ? theme.accent : theme.border,
@@ -2704,7 +2902,36 @@ function ToolButton(props: {
         cursor: disabled ? "not-allowed" : "pointer",
       }}
     >
+      {icon ? <ToolIcon name={icon} /> : null}
       {label}
     </button>
+  );
+}
+
+/**
+ * 工具栏图标。
+ *
+ * 用内联 SVG 而不是图标字体或图片：颜色走 `currentColor`，
+ * 于是按钮激活时图标自动跟着文字变成深色，不用维护两套素材。
+ *
+ * @param props.name 图标名
+ * @returns 图标元素
+ */
+function ToolIcon(props: { name: ToolIconName }): React.ReactElement {
+  return (
+    <svg
+      width={14}
+      height={14}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ flex: "0 0 auto" }}
+    >
+      <path d={TOOL_ICONS[props.name]} />
+    </svg>
   );
 }

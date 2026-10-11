@@ -18,6 +18,14 @@ export const DEFAULT_THEME: MapEditorTheme = {
   radius: "6px",
   fontSans: '"Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", sans-serif',
   fontSerif: '"Source Han Serif SC", "Noto Serif SC", "Songti SC", serif',
+  /**
+   * 手写体字体栈：全部是**系统自带**的楷体，零下载即可用。
+   *
+   * 为什么默认不含自带字体文件：完整的楷体中文字库（如霞鹜文楷）单个 woff2 就有 7.2MB，
+   * 没法无条件打进前端。想统一观感时由宿主提供 `handwritingFontUrl`，
+   * 插件会在用户开启「手写地名」后按需加载，并把它插到这串最前面（见 handwriting-font.ts）。
+   */
+  fontHand: '"Kaiti SC", "STKaiti", "KaiTi", "楷体", "Kai", "TW-Kai", serif',
   globeSkyColor: "#070c14",
   globeAtmosphereColor: "#5b8fa8",
   globeNightColor: "#0a1420",
@@ -51,5 +59,6 @@ export function themeToCssVars(theme: MapEditorTheme): Record<string, string> {
     "--wme-radius": theme.radius,
     "--wme-font-sans": theme.fontSans,
     "--wme-font-serif": theme.fontSerif,
+    "--wme-font-hand": theme.fontHand,
   };
 }

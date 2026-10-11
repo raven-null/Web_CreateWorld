@@ -64,6 +64,36 @@
 | `terrain/paper/parchment.jpg` | 平铺铺法用的贴图（512×512 正方形，35KB）：镜像拼贴做到四边无缝，供 `paperFill="tile"` 的宿主使用 | 用户提供（自有） | 2026-10-09 |
 | `terrain/paper/parchment-source.jpg` | 原档（1440×1080），换素材时从这里重新导出 | 用户提供（自有） | 2026-10-09 |
 | `terrain/paper/parchment-tiled.jpg` | 平铺接缝预览（2×2 镜像拼贴），只用来肉眼确认无缝，不参与运行 | 由 `parchment.jpg` 生成 | 2026-10-09 |
+| `terrain/paper/kenney-parchment-ancient.png` | 备选纸张：做旧感最强的无缝羊皮纸（1024×1024，682KB），当前未启用 | Kenney Cartography Pack，**CC0** | 2026-10-10 |
+| `terrain/symbols/cartography-pack.svg` | **手绘古地图符号的源素材**（162 条描边路径，178KB）：`scripts/build-antique-symbols.mjs` 从它生成 `src/symbols-antique.ts` | Kenney Cartography Pack，**CC0** | 2026-10-10 |
+| `terrain/symbols/KENNEY-LICENSE.txt` | 上述素材的许可原文（CC0，官方声明可自由用于个人 / 教育 / 商业项目） | Kenney | 2026-10-10 |
+
+### 符号素材怎么用（`terrain/symbols/`）
+
+`cartography-pack.svg` **不是直接加载的文件**，而是构建期的输入：
+
+```
+cartography-pack.svg  ──▶  scripts/build-antique-symbols.mjs  ──▶  src/symbols-antique.ts
+   （一整张无分组、无命名                        （聚类成 68 个独立符号、
+     的矢量图）                                    平移归一、坐标取整、自校验）
+```
+
+这样做的原因：
+1. **零网络请求**：符号数据内联进包里，插件装到任何项目都能用（CI 边界规则第 3 条）
+2. **可换色**：描边用 `currentColor` 语义，能随地形色与主题变化，图片素材做不到
+3. **体积小**：68 个符号的路径数据共约 118KB，比同精度的位图小得多
+
+换素材或调整符号时：
+```bash
+# 1) 覆盖 SVG 后重新生成
+node scripts/build-antique-symbols.mjs
+# 2) 放大看候选符号，确认该用哪个编号
+node scripts/preview-antique-symbols.mjs 44 40 18 39
+# 3) 把选定的编号填进 src/terrain-style.ts 的 ANTIQUE_DECORATION_SYMBOLS
+```
+
+> ⚠️ **换素材后序号会变**：`sourceIndex` 是符号在扫描顺序中的位置，
+> 换一张 SVG 就得重新确认 `ANTIQUE_DECORATION_SYMBOLS` 的映射，否则山会变成船。
 
 ### 为什么同时留「拉伸」和「平铺」两份
 

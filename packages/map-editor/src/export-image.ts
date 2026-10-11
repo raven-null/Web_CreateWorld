@@ -36,6 +36,20 @@ export interface ExportImageOptions {
   styleMode?: "flat" | "handdrawn";
   /** 手绘风格用的纸张贴图（不传则临时生成一张） */
   paper?: HTMLCanvasElement;
+  /**
+   * 装饰符号画风（默认 `modern`）。
+   *
+   * 传当前屏幕上的画风，导出图上的符号才与所见一致；
+   * 与 `styleMode` 一样属于**渲染参数**，不参与任何数据读写。
+   */
+  symbolStyle?: "antique" | "modern";
+  /**
+   * 地名 / 标注用的字体栈（不传则用内置无衬线栈）。
+   *
+   * 由调用方按「是否开启手写地名」算好后传入（见 `terrain-render.ts` 的 `labelFont()`）：
+   * 这样导出的字与屏幕所见一致，而本模块不必认识主题与字体加载状态。
+   */
+  labelFontFamily?: string;
 }
 
 /** 导出结果 */
@@ -80,6 +94,8 @@ export async function exportBoardImage(options: ExportImageOptions): Promise<Exp
       options.height,
       options.palette,
       options.paper ?? currentPaperTexture(),
+      // 符号画风跟随屏幕：导出图不该出现「屏幕上木刻符号、导出的却是程序化符号」
+      options.symbolStyle,
     );
     context.imageSmoothingEnabled = scale < 1;
     context.drawImage(baked, 0, 0, width, height);
@@ -104,7 +120,7 @@ export async function exportBoardImage(options: ExportImageOptions): Promise<Exp
     drawGraticule(context, width, height);
   }
   if (options.includeScaleBar && options.radiusKm) {
-    drawScaleBar(context, width, height, options.radiusKm);
+    drawScaleBar(context, width, height, options.radiusKm, options.labelFontFamily);
   }
 
   const png = await canvasToBlob(canvas, "image/png");
@@ -194,12 +210,14 @@ function drawGraticule(context: CanvasRenderingContext2D, width: number, height:
  * @param width 宽
  * @param height 高
  * @param radiusKm 天体半径
+ * @param fontFamily 标注字体栈（不传则用内置无衬线栈）
  */
 function drawScaleBar(
   context: CanvasRenderingContext2D,
   width: number,
   height: number,
   radiusKm: number,
+  fontFamily?: string,
 ): void {
   const board = { width, height, projection: "equirect" as const, radiusKm };
   const kmPerPixel = kilometersPerPixelLon(board, 0);
@@ -224,7 +242,9 @@ function drawScaleBar(
   context.fillStyle = "#c9a15c";
   context.fillRect(x, y, barPixels, barHeight);
   context.fillStyle = "#e8e0d3";
-  context.font = `${Math.max(11, Math.round(height * 0.022))}px "Source Han Sans SC", sans-serif`;
+  context.font = `${Math.max(11, Math.round(height * 0.022))}px ${
+    fontFamily ?? '"Source Han Sans SC", sans-serif'
+  }`;
   context.textAlign = "center";
   context.textBaseline = "bottom";
   const label = bestKm >= 1000 ? `${Math.round(bestKm / 1000)} 千 km` : `${Math.round(bestKm)} km`;
