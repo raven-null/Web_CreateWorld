@@ -124,6 +124,8 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
   const [frameReady, setFrameReady] = useState(false);
   /** 是否已经进过画布：没进过就完全不挂载 iframe，避免其它页面白下载 460KB 画布文件 */
   const [mounted, setMounted] = useState(false);
+  /** 桥是否已就绪（收到 weave:ready）：就绪前用遮罩盖住 iframe，避免看到未注入数据的画布 */
+  const [bridgeReady, setBridgeReady] = useState(false);
   const bridgeReadyRef = useRef(false);
   const syncingRef = useRef(false);
   const pendingPayloadRef = useRef<WeavePayload | null>(null);
@@ -510,6 +512,8 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
    * 每个 focus 值只处理一次，避免用户在画布上平移时被反复拉回。
    */
   const focusHandledRef = useRef("");
+  /** 已经消费过「自动进入编辑页」的 focus 值：避免同一次跳转反复触发 */
+  const editOpenedRef = useRef("");
   useEffect(() => {
     if (!active) {
       return;
@@ -527,7 +531,18 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     }
     focusHandledRef.current = focusId;
     frame.contentWindow?.postMessage({ type: "weave:focus", nodeId: focusId }, window.location.origin);
-  }, [active, state.phase, location.search]);
+
+    // ?edit=1：来自「条目列表新建」的跳转——先让用户看到它在画布上的位置与详情浮层，
+    // 再进入条目页写正文（节点即条目，正文仍在条目页编辑）。
+    // 同一个 focus 只自动进一次，避免之后从条目行点「画布」时又被弹进编辑器。
+    if (new URLSearchParams(location.search).get("edit") === "1" && editOpenedRef.current !== focusId) {
+      editOpenedRef.current = focusId;
+      const timer = window.setTimeout(() => {
+        navigate(`/w/${worldId}/entries/${focusId}/edit`);
+      }, 600);
+      return () => window.clearTimeout(timer);
+    }
+  }, [active, state.phase, location.search, navigate, worldId]);
 
   // 页面下发的动作（重新载入 / 停用）
   useEffect(() => {
@@ -560,6 +575,7 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
       const data = (event.data ?? {}) as BridgeMessage;
       if (data.type === "weave:ready") {
         bridgeReadyRef.current = true;
+        setBridgeReady(true);
         const pending = pendingPayloadRef.current;
         const pendingCategory = pendingCategoryRef.current;
         pendingPayloadRef.current = null;
@@ -650,18 +666,29 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     return null;
   }
 
+  /**
+   * 首次加载期间用遮罩盖住画布，等桥就绪后再淡入。
+   * 否则会先看到 Weave 自己渲染的那一瞬（用户反馈的「显示没修改的 Weave 界面」）。
+   * 遮罩文字带上当前状态，让等待有解释。
+   */
+  const veilText = state.phase === "local" ? "正在显示本地缓存，随后拉取最新数据…" : "正在打开画布…";
+
   return (
     <div className={`canvas-host${active ? " is-active" : ""}`} aria-hidden={!active}>
       <iframe
         ref={frameRef}
-        className="canvas-frame"
-        // 带构建版本戳，避免 CDN/浏览器缓存命中旧的画布文件（版本不变时可长期缓存）
+        className={`canvas-frame${bridgeReady ? " is-ready" : ""}`}
+        // 带构建期版本戳：同一构建内刷新会命中 HTTP 缓存（不再整包重下），新构建自动取新
         src={`/weave/weave.html?v=${__CANVAS_VERSION__}`}
         title="画布编辑器"
         allow="clipboard-write"
         onLoad={() => setFrameReady(true)}
       />
-      {state.phase === "loading" && <div className="canvas-veil">正在加载画布…</div>}
+      {(state.phase === "loading" || (state.phase === "local" && !bridgeReady)) && (
+        <div className="canvas-veil">
+          <span>{veilText}</span>
+        </div>
+      )}
     </div>
   );
 }
