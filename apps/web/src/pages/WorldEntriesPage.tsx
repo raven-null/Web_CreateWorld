@@ -91,7 +91,12 @@ export default function WorldEntriesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyword]);
 
-  /** 创建条目并进入编辑页 */
+  /**
+   * 创建条目后直接去画布看它。
+   *
+   * 节点与条目是同一份数据（一个节点 = 一个条目），所以新建完最有用的反馈
+   * 就是「在画布上看到它」——跳过去并把它居中高亮，避免用户以为要两边各建一次。
+   */
   const handleCreate = async (event: FormEvent) => {
     event.preventDefault();
     setCreateError("");
@@ -101,7 +106,8 @@ export default function WorldEntriesPage() {
         method: "POST",
         body: { title: newTitle.trim(), categoryId: newCategoryId },
       });
-      navigate(`/w/${worldId}/entries/${data.id}/edit`);
+      // 去画布定位这个新节点；带 ?edit=1 让它顺带打开条目页写正文
+      navigate(`/w/${worldId}/canvas?cat=${newCategoryId}&focus=${data.id}&edit=1`);
     } catch (err) {
       setCreateError((err as Error).message);
     } finally {
@@ -146,10 +152,25 @@ export default function WorldEntriesPage() {
               新建条目
             </button>
           )}
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => void fetchEntries()}
+            title="重新加载最新数据"
+          >
+            刷新
+          </button>
           <Link to={`/w/${worldId}/search`} className="btn ghost">
             全文搜索
           </Link>
         </div>
+
+        {/* 与画布的一致性提示：节点即条目，两边是同一份数据 */}
+        <p className="entries-hint">
+          共 <strong>{entries.length}</strong> 条
+          {categoryId ? "（当前分类）" : ""}　·　条目与画布的节点一一对应：
+          在画布上新增一个节点，这里就会多出一条条目
+        </p>
 
         {error && <div className="notice error">{error}</div>}
 
