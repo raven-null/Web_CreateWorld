@@ -609,8 +609,10 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         return;
       }
       if (data.type === "weave:open-entry" && data.nodeId) {
+        // 可编辑时双击直接进**编辑页**写作；只读时进**阅读页**（没有编辑权限，不给编辑器入口）
         const current = canvasInternals.getState();
-        navigate(`/w/${current.worldId}/entries/${data.nodeId}`);
+        const suffix = statusLockedRef.current ? "" : "/edit";
+        navigate(`/w/${current.worldId}/entries/${data.nodeId}${suffix}`);
         return;
       }
       if (data.type === "weave:status" && data.message) {

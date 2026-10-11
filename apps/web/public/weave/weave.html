@@ -8666,7 +8666,8 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
  *      · 顶栏重做——左侧平铺的颜色（每种颜色标注它代表的分类）、右侧操作按钮、统计贴最右；
  *      · 主题配色——把 Weave 的浅色变量换成平台深色系；
  *      · 侧边栏补一个网格背景开关；颜色与分类的对应关系用标签标出；
- *   4. 节点详情浮层：点击节点展示条目标题与摘要，双击进条目页。
+ *   4. 节点详情浮层：点击节点展示条目标题与摘要；双击（或浮层按钮）打开条目——
+ *      可编辑时进**编辑页**写作，只读时进**阅读页**（由父页面按权限决定）。
  *
  * 消息协议（父页面 → 桥）：
  *   { type: "weave:data", payload }      注入画布数据（首次加载与外部改动后刷新都用它）
@@ -8676,7 +8677,7 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
  * 消息协议（桥 → 父页面）：
  *   { type: "weave:ready" }              画布已就绪，可以注入数据（会反复广播直到收到数据）
  *   { type: "weave:change", payload }    画布内容变化（整份存档）
- *   { type: "weave:open-entry", nodeId } 用户请求打开某条目的条目页
+ *   { type: "weave:open-entry", nodeId } 用户请求打开某条目页（父页面按权限决定阅读页或编辑页）
  *   { type: "weave:status", message }    状态提示（同步中 / 同步完成 / 出错）
  */
 (function () {
