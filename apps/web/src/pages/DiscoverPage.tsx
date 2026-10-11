@@ -14,6 +14,17 @@ export default function DiscoverPage() {
   const [sort, setSort] = useState<"updated" | "created">("updated");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  /** 加载超过 4 秒时给出「较慢/重试中」提示，避免用户以为页面卡死 */
+  const [slowHint, setSlowHint] = useState(false);
+
+  useEffect(() => {
+    if (!loading) {
+      setSlowHint(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlowHint(true), 4000);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
 
   // 标签筛选条选项
   useEffect(() => {
@@ -79,7 +90,11 @@ export default function DiscoverPage() {
       </div>
 
       {error && <div className="notice error">{error}</div>}
-      {loading && <div className="loading">加载中…</div>}
+      {loading && (
+        <div className="loading">
+          {slowHint ? "加载较慢，正在重试…（网络或服务波动）" : "加载中…"}
+        </div>
+      )}
       {!loading && worlds.length === 0 && <div className="empty">还没有公开的世界，去创建第一个吧</div>}
 
       <div className="card-grid">
