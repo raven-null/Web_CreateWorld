@@ -9539,6 +9539,9 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       event.stopPropagation();
       if (event.key === "Escape") {
         event.preventDefault();
+        if (options.escDisabled) {
+          return;
+        }
         closeConfirm();
       }
     };
@@ -10053,6 +10056,67 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       }
       pillMenuTimer = window.setTimeout(hidePillMenu, 180);
     };
+  }
+
+  // ---------- 接管 Weave 的「清空」：用主题弹窗替换浏览器原生 confirm ----------
+
+  /**
+   * 包装 `App.clearAllNodes`：Weave 原实现用的是浏览器原生 `confirm()`，
+   * 那个框是浏览器画的、完全不受主题控制（用户反馈「从页面上面随便弹出」）。
+   * 这里改为先用本桥的主题确认弹窗询问，确认后再调用原逻辑。
+   *
+   * 细节：调用原逻辑前临时把 `window.confirm` 换成「总是同意」，
+   * 以免它再次弹出原生框；用 finally 保证必然还原，不影响其它地方。
+   */
+  function wrapClearAllNodes() {
+    if (typeof App.clearAllNodes !== "function" || App._cwClearWrapped) {
+      return;
+    }
+    var originalClear = App.clearAllNodes.bind(App);
+    App._cwClearWrapped = true;
+
+    App.clearAllNodes = function () {
+      if (App.readOnly) {
+        return;
+      }
+      var nodes = (App.canvasState && App.canvasState.nodes) || [];
+      var regions = (App.canvasState && App.canvasState.regions) || [];
+      if (nodes.length === 0 && regions.length === 0) {
+        return;
+      }
+
+      var listed = nodes.slice(0, 6).map(function (node) {
+        return { id: node.id, label: node.label || "未命名" };
+      });
+
+      openConfirm({
+        title: "清空画布",
+        messageHtml:
+          "这会清空当前分类画布上的<strong>全部 " +
+          nodes.length +
+          " 个节点</strong>与它们的连线。" +
+          "节点即条目——<strong>对应的条目与正文也会一并删除，且无法撤销</strong>：",
+        confirmText: "清空并删除全部",
+        danger: true,
+        nodes: listed,
+        onConfirm: function () {
+          // 原逻辑带原生 confirm，这里让它直接通过
+          var savedConfirm = window.confirm;
+          window.confirm = function () {
+            return true;
+          };
+          try {
+            originalClear();
+          } catch (error) {
+            log("清空画布出错：", error);
+          } finally {
+            window.confirm = savedConfirm;
+          }
+          log("已清空画布");
+        },
+      });
+    };
+    log("已接管「清空」按钮：改用主题确认弹窗");
   }
 
   /** 全局：点空白处收起悬浮菜单（只注册一次） */
@@ -10580,6 +10644,7 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     buildColorDots();
     bindPalettePanelEvents();
     bindPillMenuGlobalEvents();
+    wrapClearAllNodes();
     startNodeColorSync();
     injectNodeColorStyle();
     injectHeaderStyle();
