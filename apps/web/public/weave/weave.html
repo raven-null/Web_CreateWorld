@@ -10119,6 +10119,128 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     log("已接管「清空」按钮：改用主题确认弹窗");
   }
 
+  // ---------- 导出按钮：悬浮弹出「数据 / 图片」两个选项 ----------
+
+  /** 导出菜单元素与隐藏定时器 */
+  var exportMenuEl = null;
+  var exportMenuTimer = null;
+
+  /** 取（或创建）导出菜单 */
+  function ensureExportMenu() {
+    if (exportMenuEl && document.body.contains(exportMenuEl)) {
+      return exportMenuEl;
+    }
+    exportMenuEl = document.createElement("div");
+    exportMenuEl.className = "bridge-pill-menu bridge-export-menu";
+    exportMenuEl.style.display = "none";
+    exportMenuEl.innerHTML =
+      '<button type="button" class="bridge-pill-action" data-export="json">数据（JSON）</button>' +
+      '<button type="button" class="bridge-pill-action" data-export="png">图片（PNG）</button>';
+    exportMenuEl.addEventListener("click", function (event) {
+      event.stopPropagation();
+      var item = event.target && event.target.closest ? event.target.closest("[data-export]") : null;
+      if (!item) {
+        return;
+      }
+      var kind = item.getAttribute("data-export");
+      hideExportMenu();
+      if (kind === "png") {
+        if (typeof App.exportPNG === "function") {
+          App.exportPNG();
+          log("导出图片（PNG）");
+        }
+      } else if (typeof App.doExport === "function") {
+        App.doExport();
+        log("导出数据（JSON）");
+      }
+    });
+    exportMenuEl.addEventListener("mouseenter", function () {
+      if (exportMenuTimer !== null) {
+        clearTimeout(exportMenuTimer);
+        exportMenuTimer = null;
+      }
+    });
+    exportMenuEl.addEventListener("mouseleave", hideExportMenu);
+    document.body.appendChild(exportMenuEl);
+    return exportMenuEl;
+  }
+
+  /** 收起导出菜单 */
+  function hideExportMenu() {
+    if (exportMenuTimer !== null) {
+      clearTimeout(exportMenuTimer);
+      exportMenuTimer = null;
+    }
+    if (exportMenuEl) {
+      exportMenuEl.style.display = "none";
+    }
+  }
+
+  /**
+   * 在导出按钮下方弹出菜单（空间不足时翻到上方）。
+   * @param {HTMLElement} button 导出按钮
+   */
+  function showExportMenu(button) {
+    var menu = ensureExportMenu();
+    if (exportMenuTimer !== null) {
+      clearTimeout(exportMenuTimer);
+      exportMenuTimer = null;
+    }
+    // 先显示再量尺寸，定位才准确
+    menu.style.display = "inline-flex";
+    var rect = button.getBoundingClientRect();
+    var menuRect = menu.getBoundingClientRect();
+    var gap = 6;
+    var top = rect.bottom + gap;
+    if (top + menuRect.height > window.innerHeight - 4) {
+      top = Math.max(4, rect.top - menuRect.height - gap);
+    }
+    var left = rect.left + rect.width / 2 - menuRect.width / 2;
+    left = Math.max(6, Math.min(left, window.innerWidth - menuRect.width - 6));
+    menu.style.top = Math.round(top) + "px";
+    menu.style.left = Math.round(left) + "px";
+  }
+
+  /**
+   * 给「导出」按钮挂上悬浮菜单：鼠标停留即弹出「数据 / 图片」。
+   * 用 fixed 定位的独立菜单（同胶囊菜单的做法），不受顶栏布局与裁切影响。
+   */
+  function bindExportMenu() {
+    var button = document.getElementById("btnDoExport");
+    if (!button || button.dataset.cwExportBound === "1") {
+      return;
+    }
+    button.dataset.cwExportBound = "1";
+    button.title = "导出：数据（JSON）或图片（PNG）";
+    button.addEventListener("mouseenter", function () {
+      showExportMenu(button);
+    });
+    button.addEventListener("mouseleave", function () {
+      if (exportMenuTimer !== null) {
+        clearTimeout(exportMenuTimer);
+      }
+      // 留出鼠标移到菜单上的时间
+      exportMenuTimer = window.setTimeout(hideExportMenu, 180);
+    });
+    button.addEventListener("click", function () {
+      // 鼠标用户已经由 hover 弹出菜单；触屏没有 hover，点一下也把菜单弹出来
+      showExportMenu(button);
+    });
+    log("已为「导出」挂上悬浮菜单（数据 / 图片）");
+  }
+
+  /** 全局：点击空白处收起导出菜单（只注册一次） */
+  function bindExportMenuGlobalEvents() {
+    document.addEventListener("click", function (event) {
+      if (event.target && event.target.closest && event.target.closest(".bridge-export-menu")) {
+        return;
+      }
+      hideExportMenu();
+    });
+    window.addEventListener("scroll", hideExportMenu, true);
+    window.addEventListener("resize", hideExportMenu);
+  }
+
   /** 全局：点空白处收起悬浮菜单（只注册一次） */
   function bindPillMenuGlobalEvents() {
     document.addEventListener("click", function (event) {
@@ -10356,6 +10478,9 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       "font-size:12px;line-height:1.6;padding:2px 10px;border-radius:5px;cursor:pointer;white-space:nowrap}",
       ".bridge-pill-action:hover{background:var(--bg-hover);color:var(--text-primary)}",
       ".bridge-pill-action[data-action='remove']:hover{color:#e07a6a}",
+      // 导出菜单：两个选项竖向排列，各自占一行便于点
+      ".bridge-export-menu{flex-direction:column;align-items:stretch;padding:4px;min-width:130px}",
+      ".bridge-export-menu .bridge-pill-action{text-align:left;padding:5px 12px;font-size:12.5px}",
       ".bridge-add{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 12px;border-radius:999px;",
       "border:1px dashed var(--border-light);background:transparent;color:var(--text-secondary);font-family:inherit;",
       "font-size:12px;cursor:pointer;flex-shrink:0;transition:color .15s,border-color .15s}",
@@ -10649,6 +10774,8 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     bindPalettePanelEvents();
     bindPillMenuGlobalEvents();
     wrapClearAllNodes();
+    bindExportMenu();
+    bindExportMenuGlobalEvents();
     startNodeColorSync();
     injectNodeColorStyle();
     injectHeaderStyle();
