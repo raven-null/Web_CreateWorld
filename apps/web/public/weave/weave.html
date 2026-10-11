@@ -8924,6 +8924,98 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     true,
   );
 
+  // ---------- 侧边栏：网格背景开关（挂到 Weave 侧边栏，Weave 本体不改） ----------
+
+  /** 网格显示偏好的 localStorage 键（Weave 自带键都是 flow_*，另开一个避免混淆） */
+  var GRID_PREF_KEY = "cw_canvas_grid";
+
+  /** 网格开关按钮的 DOM id */
+  var GRID_BUTTON_ID = "bridgeGridToggle";
+
+  /** 网格开关的 SVG 图标（九宫格，与 Weave 侧边栏其它按钮同一套描边风格） */
+  var GRID_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<rect x="3" y="3" width="18" height="18" rx="2"></rect>' +
+    '<path d="M9 3v18M15 3v18M3 9h18M3 15h18"></path>' +
+    "</svg>";
+
+  /**
+   * 读取网格显示偏好（默认显示；localStorage 不可用时也按显示处理）。
+   * @returns {boolean} 是否显示网格
+   */
+  function readGridPref() {
+    try {
+      return localStorage.getItem(GRID_PREF_KEY) !== "0";
+    } catch (error) {
+      return true;
+    }
+  }
+
+  /**
+   * 应用网格显示状态。网格画在 #gridCvs 这个 canvas 上，隐藏它即可——
+   * Weave 每帧重绘的是它的内容，不改变显示属性，所以这个开关很稳。
+   * @param {boolean} visible 是否显示
+   */
+  function applyGridPref(visible) {
+    var grid = document.getElementById("gridCvs");
+    if (grid) {
+      grid.style.display = visible ? "" : "none";
+    }
+    var button = document.getElementById(GRID_BUTTON_ID);
+    if (button) {
+      // 用 Weave 侧边栏按钮自己的 active 类（.sidebar-btn.active），亮起表示「网格显示中」
+      button.classList.toggle("active", visible);
+      button.setAttribute("aria-pressed", visible ? "true" : "false");
+      button.title = visible ? "网格背景：显示中（点击隐藏）" : "网格背景：已隐藏（点击显示）";
+    }
+    try {
+      localStorage.setItem(GRID_PREF_KEY, visible ? "1" : "0");
+    } catch (error) {
+      // 隐私模式下忽略：只在本次会话生效
+    }
+  }
+
+  /**
+   * 把网格开关挂到侧边栏（「设置」按钮上方）。
+   * 侧边栏由 Weave 渲染，可能在挂载之后才出现，因此由 startGridToggle 持续补挂。
+   */
+  function mountGridToggle() {
+    var sidebar = document.getElementById("sidebar");
+    if (!sidebar) {
+      return;
+    }
+    var existing = document.getElementById(GRID_BUTTON_ID);
+    if (existing && sidebar.contains(existing)) {
+      return;
+    }
+
+    var button = document.createElement("button");
+    button.className = "sidebar-btn";
+    button.id = GRID_BUTTON_ID;
+    button.type = "button";
+    button.innerHTML = GRID_ICON;
+    button.addEventListener("click", function () {
+      var grid = document.getElementById("gridCvs");
+      var currentlyVisible = !(grid && grid.style.display === "none");
+      applyGridPref(!currentlyVisible);
+    });
+
+    var bottom = sidebar.querySelector(".sidebar-bottom");
+    if (bottom) {
+      sidebar.insertBefore(button, bottom);
+    } else {
+      sidebar.appendChild(button);
+    }
+    applyGridPref(readGridPref());
+  }
+
+  /** 启动网格开关：先挂一次，之后每秒检查（侧边栏若被重建会自动补回） */
+  function startGridToggle() {
+    mountGridToggle();
+    applyGridPref(readGridPref());
+    window.setInterval(mountGridToggle, 1000);
+  }
+
   // ---------- 注入浮层 UI ----------
   /**
    * 主题注入：把 Weave 默认的浅色配色换成平台「档案馆」深色系（变量取值与 apps/web/src/styles.css 一致）。
@@ -9025,9 +9117,10 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     }
   }
 
-  /** 启动：挂 UI、通知父页面可以下发数据，并加上载入超时保护 */
+  /** 启动：挂 UI、侧边栏开关、通知父页面可以下发数据，并加上载入超时保护 */
   function boot() {
     mountUi();
+    startGridToggle();
     log("桥已启动，等待父页面下发数据");
     loadingTimer = setTimeout(function () {
       log("等待数据超时");
