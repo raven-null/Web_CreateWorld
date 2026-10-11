@@ -8925,24 +8925,66 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   );
 
   // ---------- 注入浮层 UI ----------
+  /**
+   * 主题注入：把 Weave 默认的浅色配色换成平台「档案馆」深色系（变量取值与 apps/web/src/styles.css 一致）。
+   * Weave 用 CSS 变量控制颜色，这里整体重定义变量即可，不修改它的样式表；
+   * 画布底色（.canvas 是硬编码的 #f8f9fb）再用一条规则覆盖。
+   */
+  function injectTheme() {
+    var style = document.createElement("style");
+    style.id = "bridgeTheme";
+    style.textContent = [
+      ":root{",
+      "--bg-page:#14120f;",
+      "--bg-card:#221e19;",
+      "--bg-hover:#2b261f;",
+      "--bg-input:#1c1915;",
+      "--border:#3a332a;",
+      "--border-light:#4a4234;",
+      "--text-primary:#e8e0d3;",
+      "--text-secondary:#a89c88;",
+      "--text-muted:#776c5c;",
+      "--accent:#c9a15c;",
+      "--accent-hover:#d8b26a;",
+      "--accent-light:rgba(201,161,92,.18);",
+      "--accent-bg:rgba(201,161,92,.10);",
+      "--shadow-sm:0 1px 2px rgba(0,0,0,.35);",
+      "--shadow-md:0 2px 8px rgba(0,0,0,.4);",
+      "--shadow-lg:0 4px 16px rgba(0,0,0,.5);",
+      "--node-bg:#221e19;",
+      "--node-border:#3a332a;",
+      "--node-header-text:#e8e0d3;",
+      "--grid-line:rgba(201,161,92,.06);",
+      "--grid-line-strong:rgba(201,161,92,.12);",
+      "}",
+      // 画布与顶栏背景贴合主题
+      ".canvas{background-color:#14120f !important;}",
+      ".node{background:var(--bg-card);border-color:var(--border);box-shadow:0 6px 20px rgba(0,0,0,.35);}",
+      ".node:hover{box-shadow:0 8px 26px rgba(0,0,0,.45);}",
+      ".socket{background:var(--bg-card);}",
+    ].join("");
+    document.head.appendChild(style);
+  }
+
   /** 插入桥接用的样式与浮层，保证不依赖平台样式表 */
   function mountUi() {
+    injectTheme();
     var style = document.createElement("style");
     style.textContent = [
       "#bridgeDetail{position:fixed;right:16px;bottom:16px;z-index:9999;max-width:320px;display:none;",
-      "background:#201d18;border:1px solid #4a4234;border-radius:10px;padding:12px 14px;color:#e8e0d3;",
+      "background:#221e19;border:1px solid #3a332a;border-radius:10px;padding:12px 14px;color:#e8e0d3;",
       "font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.45)}",
-      "#bridgeDetailTitle{font-size:15px;font-weight:600;margin-bottom:6px;color:#e8cf9a}",
-      "#bridgeDetailDesc{color:#b3a894;max-height:150px;overflow:auto;white-space:pre-wrap}",
+      "#bridgeDetailTitle{font-size:15px;font-weight:600;margin-bottom:6px;color:#c9a15c}",
+      "#bridgeDetailDesc{color:#a89c88;max-height:150px;overflow:auto;white-space:pre-wrap}",
       "#bridgeDetailBtns{margin-top:10px;display:flex;gap:8px}",
-      "#bridgeDetailBtns button{cursor:pointer;border:1px solid #5b5140;background:#2a251d;color:#e8e0d3;",
+      "#bridgeDetailBtns button{cursor:pointer;border:1px solid #4a4234;background:#1c1915;color:#e8e0d3;",
       "border-radius:6px;padding:4px 10px;font-size:12px}",
-      "#bridgeDetailBtns button:hover{border-color:#c9a15c;color:#e8cf9a}",
-      "#bridgeStatus{position:fixed;left:16px;bottom:16px;z-index:9999;display:none;background:#2a251d;",
-      "border:1px solid #5b5140;border-radius:8px;padding:6px 12px;color:#c9a15c;",
+      "#bridgeDetailBtns button:hover{border-color:#c9a15c;color:#c9a15c}",
+      "#bridgeStatus{position:fixed;left:16px;bottom:16px;z-index:9999;display:none;background:#221e19;",
+      "border:1px solid #3a332a;border-radius:8px;padding:6px 12px;color:#c9a15c;",
       "font:12px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif}",
       "#bridgeLoading{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;",
-      "background:#17150f;color:#a89c88;font:14px system-ui,-apple-system,'Segoe UI',sans-serif}",
+      "background:#14120f;color:#a89c88;font:14px system-ui,-apple-system,'Segoe UI',sans-serif}",
       "#bridgeLoading b{color:#c9a15c;font-weight:600}",
     ].join("");
     document.head.appendChild(style);

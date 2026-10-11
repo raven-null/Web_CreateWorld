@@ -111,8 +111,15 @@ entryRoutes.get("/worlds/:worldId/entries", async (c) => {
   const keyword = c.req.query("q")?.trim() || null;
 
   const result = await c.env.DB.prepare(
+    // summary：取第一个内容块的纯文本前 80 字，供列表与画布节点展示摘要用。
+    // 这样调用方不必为了拿摘要逐条请求详情（画布每次加载都取摘要，逐条请求会明显变慢）。
     `SELECT e.id, e.title, e.category_id, e.word_count, e.protected, e.updated_at,
-            u.name AS lastEditorName
+            u.name AS lastEditorName,
+            (SELECT substr(b.text_content, 1, 80)
+               FROM entry_blocks b
+              WHERE b.entry_id = e.id
+              ORDER BY b.sort_order ASC
+              LIMIT 1) AS summary
      FROM entries e
      LEFT JOIN user u ON u.id = e.last_editor_id
      WHERE e.world_id = ?1
@@ -134,6 +141,7 @@ entryRoutes.get("/worlds/:worldId/entries", async (c) => {
       protected: Boolean(row.protected),
       updatedAt: row.updated_at as number,
       lastEditorName: (row.lastEditorName as string | null) ?? "",
+      summary: (row.summary as string | null)?.trim() ?? "",
     })),
   );
 });

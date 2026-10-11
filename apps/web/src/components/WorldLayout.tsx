@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, Outlet, useParams } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useParams } from "react-router-dom";
 import { VISIBILITY_LABELS, type MemberRole, type WorldVisibility } from "@create-world/core";
 import { api } from "../lib/api";
+import CanvasHost from "./CanvasHost";
 
 /** 世界基本信息（侧边栏用） */
 interface WorldBrief {
@@ -17,8 +18,12 @@ interface WorldBrief {
  */
 export default function WorldLayout() {
   const { worldId = "" } = useParams<{ worldId: string }>();
+  const location = useLocation();
   const [world, setWorld] = useState<WorldBrief | null>(null);
   const [error, setError] = useState("");
+
+  /** 是否正在看画布（决定常驻画布显示还是隐藏） */
+  const isCanvasRoute = location.pathname.includes("/canvas");
 
   // 加载世界基本信息（名称与角色，决定侧边栏内容）
   useEffect(() => {
@@ -55,6 +60,8 @@ export default function WorldLayout() {
       </aside>
       <div className="world-content">
         <Outlet />
+        {/* 画布常驻：切到其它页面只隐藏不卸载，回来时无需重新加载 Weave */}
+        <CanvasHost worldId={worldId} active={isCanvasRoute} />
       </div>
     </div>
   );

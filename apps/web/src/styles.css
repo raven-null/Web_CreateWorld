@@ -1481,6 +1481,8 @@ mark {
 .world-content:has(> .canvas-page) {
   padding: 0;
   max-width: none;
+  /* 作为常驻画布的定位容器 */
+  position: relative;
 }
 
 .canvas-page {
@@ -1490,28 +1492,55 @@ mark {
   min-height: 420px;
 }
 
-.canvas-toolbar {
+/* 分类导航栏：画布上方的一排标签（人物 / 地点 / 势力 …） */
+.canvas-tabs {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  flex-wrap: wrap;
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-soft);
+  flex-shrink: 0;
 }
 
-.canvas-toolbar-left,
-.canvas-toolbar-right {
+.canvas-tabs-list {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
+  overflow-x: auto;
   min-width: 0;
+  scrollbar-width: none;
 }
 
-.canvas-title {
-  font-family: var(--font-serif);
-  font-size: 16px;
+.canvas-tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
+.canvas-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.canvas-tab:hover {
+  color: var(--text);
+  background: var(--bg-card);
+  border-color: var(--border);
+}
+
+.canvas-tab.is-active {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
 }
 
 .canvas-sync {
@@ -1521,46 +1550,65 @@ mark {
   border: 1px solid var(--border);
   color: var(--text-faint);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
+.canvas-sync-ready,
 .canvas-sync-idle {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
-.canvas-sync-syncing {
+.canvas-sync-syncing,
+.canvas-sync-local {
   color: #d8b26a;
 }
 
 .canvas-sync-error {
   color: #e07a6a;
+  border-color: color-mix(in srgb, #e07a6a 45%, transparent);
 }
 
-.canvas-sync-detail {
-  font-size: 12px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* 常驻画布宿主：绝对定位铺满内容区（分类栏之下），切页面只隐藏不销毁 */
+.canvas-host {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.canvas-host.is-active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .canvas-frame {
-  flex: 1;
   width: 100%;
-  min-height: 0;
+  height: 100%;
   border: 0;
   display: block;
-  background: #17150f;
+  background: #14120f;
+}
+
+.canvas-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--text-faint);
+  font-size: 13px;
 }
 
 @media (max-width: 768px) {
   /* 移动端顶栏换行后高度不固定，画布改用视口高度留出余量 */
   .canvas-page {
     height: calc(100vh - 118px);
-  }
-
-  .canvas-sync-detail {
-    display: none;
   }
 }
 
