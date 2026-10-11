@@ -9355,24 +9355,20 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   /** 颜色面板状态：mode = none（收起）/ add（添加颜色）/ edit（改某个颜色的说明） */
   var palettePanel = { mode: "none", editColor: "" };
 
-  /** 面板容器 id */
+  /** 弹窗容器 id（挂在 body 上，居中显示，不再从顶栏下方展开） */
   var PALETTE_PANEL_ID = "bridgePalettePanel";
 
-  /** 取面板容器（不存在则建在色点行下方），失败返回 null */
+  /** 取弹窗容器（不存在则创建），失败返回 null */
   function ensurePalettePanel() {
     var panel = document.getElementById(PALETTE_PANEL_ID);
     if (panel) {
       return panel;
     }
-    var anchor = document.getElementById(COLOR_DOTS_ID);
-    if (!anchor || !anchor.parentNode) {
-      return null;
-    }
     panel = document.createElement("div");
     panel.id = PALETTE_PANEL_ID;
-    panel.className = "bridge-palette-panel";
+    panel.className = "bridge-modal";
     panel.style.display = "none";
-    anchor.parentNode.appendChild(panel);
+    document.body.appendChild(panel);
     return panel;
   }
 
@@ -9385,7 +9381,7 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       .replace(/>/g, "&gt;");
   }
 
-  /** 重绘面板内容（添加 / 编辑 / 收起） */
+  /** 重绘弹窗内容（添加 / 改说明 / 关闭） */
   function renderPalettePanel() {
     var panel = ensurePalettePanel();
     if (!panel) {
@@ -9417,27 +9413,48 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       })
       .join("");
 
+    // 完整弹窗：标题栏 + 表单 + 底部按钮 + 已有颜色
     panel.innerHTML =
-      '<div class="bridge-palette-row">' +
-      '<span class="bridge-palette-tip">设置颜色</span>' +
+      '<div class="bridge-modal-mask" data-close="1"></div>' +
+      '<div class="bridge-modal-box" role="dialog" aria-modal="true" aria-label="' +
+      (editing ? "修改颜色说明" : "添加颜色") +
+      '">' +
+      '<div class="bridge-modal-head">' +
+      "<span>" +
+      (editing ? "修改这个颜色" : "添加颜色") +
+      "</span>" +
+      '<button type="button" class="bridge-modal-close" data-close="1" aria-label="关闭">×</button>' +
+      "</div>" +
+      '<div class="bridge-modal-body">' +
+      '<div class="bridge-field">' +
+      '<span class="bridge-field-label">颜色</span>' +
       '<input type="color" class="bridge-palette-color" id="bridgePaletteColor" value="' +
       editingHex +
       '" />' +
+      '<span class="bridge-field-hint">点右侧色块可直接改用已有颜色</span>' +
+      "</div>" +
+      '<div class="bridge-field">' +
+      '<span class="bridge-field-label">说明</span>' +
       '<input type="text" class="bridge-palette-text" id="bridgePaletteLabel" maxlength="10" placeholder="它代表什么，如：关键人物" value="' +
       escapeAttr(editingLabel) +
       '" />' +
+      "</div>" +
+      '<div class="bridge-field">' +
+      '<span class="bridge-field-label">已有</span>' +
+      '<div class="bridge-palette-swatches">' +
+      (swatches || '<span class="bridge-field-hint">还没有别的颜色</span>') +
+      "</div>" +
+      "</div>" +
+      "</div>" +
+      '<div class="bridge-modal-foot">' +
+      (editing ? '<button type="button" class="bridge-palette-btn danger" id="bridgePaletteDelete">移除</button>' : "") +
+      '<button type="button" class="bridge-palette-btn" id="bridgePaletteCancel">取消</button>' +
       '<button type="button" class="bridge-palette-btn primary" id="bridgePaletteSave">' +
       (editing ? "保存" : "添加") +
       "</button>" +
-      (editing ? '<button type="button" class="bridge-palette-btn danger" id="bridgePaletteDelete">移除</button>' : "") +
-      '<button type="button" class="bridge-palette-btn" id="bridgePaletteCancel">取消</button>' +
       "</div>" +
-      (editing
-        ? ""
-        : '<div class="bridge-palette-swatches"><span class="bridge-palette-tip">或点一个已有颜色改说明</span>' +
-          swatches +
-          "</div>");
-    panel.style.display = "block";
+      "</div>";
+    panel.style.display = "flex";
 
     var textInput = document.getElementById("bridgePaletteLabel");
     if (textInput) {
@@ -9500,6 +9517,11 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     panel.onclick = function (event) {
       var target = event.target;
       if (!target || !target.closest) {
+        return;
+      }
+      // 点遮罩或右上角 × 关闭
+      if (target.closest("[data-close]")) {
+        closePalettePanel();
         return;
       }
       if (target.closest("#bridgePaletteSave")) {
@@ -9720,27 +9742,39 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       "border:1px dashed var(--border-light);background:transparent;color:var(--text-secondary);font-family:inherit;",
       "font-size:12px;cursor:pointer;flex-shrink:0;transition:color .15s,border-color .15s}",
       ".bridge-add:hover{color:var(--accent);border-color:var(--accent)}",
-      // 颜色设置面板（添加 / 改说明），浮在顶栏下方
-      ".bridge-palette-panel{position:absolute;top:100%;left:0;right:0;z-index:120;background:var(--bg-card);",
-      "border-bottom:1px solid var(--border);padding:10px 16px 12px;box-shadow:var(--shadow-md)}",
-      ".bridge-palette-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}",
-      ".bridge-palette-tip{font-size:12px;color:var(--text-secondary);white-space:nowrap}",
-      ".bridge-palette-color{width:36px;height:26px;padding:0;border:1px solid var(--border);border-radius:4px;",
-      "background:var(--bg-input);cursor:pointer}",
-      ".bridge-palette-text{flex:1 1 220px;min-width:160px;max-width:320px;background:var(--bg-input);",
-      "border:1px solid var(--border);border-radius:4px;color:var(--text-primary);font-family:inherit;",
-      "font-size:13px;padding:5px 10px;outline:none}",
+      // 添加 / 改说明的弹窗（居中模态，铺在整页之上）
+      ".bridge-modal{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center}",
+      ".bridge-modal-mask{position:absolute;inset:0;background:rgba(0,0,0,.55)}",
+      ".bridge-modal-box{position:relative;width:min(420px,calc(100vw - 32px));background:var(--bg-card);",
+      "border:1px solid var(--border-light);border-radius:12px;box-shadow:var(--shadow-lg);",
+      "font-family:inherit;overflow:hidden}",
+      ".bridge-modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;",
+      "border-bottom:1px solid var(--border);font-size:15px;font-weight:600;color:var(--text-primary)}",
+      ".bridge-modal-close{width:28px;height:28px;border:0;background:transparent;color:var(--text-secondary);",
+      "font-size:20px;line-height:1;cursor:pointer;border-radius:6px}",
+      ".bridge-modal-close:hover{background:var(--bg-hover);color:var(--text-primary)}",
+      ".bridge-modal-body{padding:16px 18px;display:flex;flex-direction:column;gap:14px}",
+      ".bridge-field{display:flex;align-items:center;gap:10px}",
+      ".bridge-field-label{width:36px;flex-shrink:0;font-size:13px;color:var(--text-secondary)}",
+      ".bridge-field-hint{font-size:12px;color:var(--text-muted)}",
+      ".bridge-modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;",
+      "border-top:1px solid var(--border);background:var(--bg-soft)}",
+      ".bridge-palette-color{width:44px;height:30px;padding:0;border:1px solid var(--border);border-radius:6px;",
+      "background:var(--bg-input);cursor:pointer;flex-shrink:0}",
+      ".bridge-palette-text{flex:1;min-width:0;background:var(--bg-input);border:1px solid var(--border);",
+      "border-radius:6px;color:var(--text-primary);font-family:inherit;font-size:13px;padding:6px 10px;outline:none}",
       ".bridge-palette-text:focus{border-color:var(--accent)}",
-      ".bridge-palette-btn{height:28px;padding:0 14px;border-radius:6px;border:1px solid var(--border);",
+      ".bridge-palette-btn{height:30px;padding:0 16px;border-radius:6px;border:1px solid var(--border);",
       "background:var(--bg-input);color:var(--text-secondary);font-family:inherit;font-size:12px;cursor:pointer}",
       ".bridge-palette-btn:hover{color:var(--text-primary);border-color:var(--border-light)}",
       ".bridge-palette-btn.primary{background:var(--accent);border-color:var(--accent);color:#14120f;font-weight:600}",
       ".bridge-palette-btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}",
+      ".bridge-palette-btn.danger{margin-right:auto}",
       ".bridge-palette-btn.danger:hover{color:#e07a6a;border-color:#e07a6a}",
-      ".bridge-palette-swatches{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}",
-      ".bridge-swatch{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;",
+      ".bridge-palette-swatches{display:flex;align-items:center;gap:8px;flex-wrap:wrap}",
+      ".bridge-swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;",
       "transition:transform .15s,border-color .15s}",
-      ".bridge-swatch:hover{transform:scale(1.15)}",
+      ".bridge-swatch:hover{transform:scale(1.12)}",
       ".bridge-swatch.is-active{border-color:var(--accent)}",
       ".bridge-color-dots [data-cw-label]::after{font-size:9.5px;margin-top:3px;color:var(--text-faint)}",
       // 操作按钮组靠右
