@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import type { TimeGranularity, TimeNumberStyle } from "@create-world/core";
 import { api } from "../lib/api";
 import { formatEventTime } from "../lib/format";
+import { useCachedResource } from "../lib/page-cache";
 import { showToast } from "../lib/toast";
 import PageLoader from "../components/PageLoader";
 
@@ -85,7 +86,6 @@ function compareEvents(a: EventItem, b: EventItem): number {
  */
 export default function WorldTimelinePage() {
   const { worldId = "" } = useParams<{ worldId: string }>();
-  const [data, setData] = useState<TimelineData | null>(null);
   const [entries, setEntries] = useState<EntryOption[]>([]);
   const [error, setError] = useState("");
 
@@ -94,16 +94,21 @@ export default function WorldTimelinePage() {
   const [form, setForm] = useState<EventForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  /** 加载时间线数据 */
-  const load = async () => {
-    const timeline = await api<TimelineData>(`/api/worlds/${worldId}/timeline`);
-    setData(timeline);
-  };
+  /**
+   * 时间线数据：用缓存 hook 实现「先渲染上次内容、再后台刷新」，
+   * 侧边栏切到本页时不再等接口才有画面。`timeline.setData` 供本地编辑后就地更新。
+   */
+  const timeline = useCachedResource<TimelineData>(`timeline:${worldId}`, () =>
+    api<TimelineData>(`/api/worlds/${worldId}/timeline`),
+  );
+  const data = timeline.data;
+  const setData = timeline.setData;
 
   useEffect(() => {
-    load().catch((err: Error) => setError(err.message));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worldId]);
+    if (timeline.error) {
+      setError(timeline.error);
+    }
+  }, [timeline.error]);
 
   /** 确保条目选项已加载（事件可关联条目） */
   const ensureEntries = async () => {
@@ -166,7 +171,8 @@ export default function WorldTimelinePage() {
       }
       showToast("success", editingId ? "事件已更新" : "事件已创建");
       setModalOpen(false);
-      await load();
+      // 写操作后重新拉取（会同时刷新本地缓存）
+      timeline.reload();
     } catch (err) {
       showToast("error", (err as Error).message);
     } finally {
@@ -182,7 +188,7 @@ export default function WorldTimelinePage() {
     try {
       await api(`/api/events/${event.id}`, { method: "DELETE" });
       showToast("success", "事件已删除");
-      await load();
+      timeline.reload();
     } catch (err) {
       showToast("error", (err as Error).message);
     }

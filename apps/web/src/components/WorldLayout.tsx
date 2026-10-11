@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useParams } from "react-router-dom";
 import { VISIBILITY_LABELS, type MemberRole, type WorldVisibility } from "@create-world/core";
 import { api } from "../lib/api";
+import { prefetchWorldRoutes } from "../lib/prefetch";
 import CanvasHost from "./CanvasHost";
 
 /** 世界基本信息（侧边栏用） */
@@ -25,7 +26,8 @@ export default function WorldLayout() {
   /** 是否正在看画布（决定常驻画布显示还是隐藏） */
   const isCanvasRoute = location.pathname.includes("/canvas");
 
-  // 加载世界基本信息（名称与角色，决定侧边栏内容）
+  // 加载世界基本信息（名称与角色，决定侧边栏内容）；同时预取侧边栏各页面的代码，
+  // 这样在画布 / 时间线 / 地图 / 设置之间切换时不必等下载
   useEffect(() => {
     api<WorldBrief>(`/api/worlds/${worldId}`)
       .then((data) => {
@@ -33,6 +35,7 @@ export default function WorldLayout() {
         setError("");
       })
       .catch((err: Error) => setError(err.message));
+    prefetchWorldRoutes(worldId);
   }, [worldId]);
 
   const isWorldAdmin = world?.myRole === "owner" || world?.myRole === "admin";

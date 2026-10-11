@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { authClient } from "../lib/auth-client";
 import { readUserRole } from "../lib/format";
+import { prefetchCommonRoutes } from "../lib/prefetch";
 import ToastHost from "./ToastHost";
 
 /**
@@ -19,6 +20,12 @@ export default function Layout() {
 
   // 世界区页面去掉居中限宽，让侧边栏贴住屏幕左缘
   const isWorldRoute = location.pathname.startsWith("/w/");
+
+  // 首屏渲染完成后，在空闲时段预取常用页面的代码：
+  // 之后点导航（我的世界 / 草稿箱 / 设置…）就是本地读，不再等下载
+  useEffect(() => {
+    prefetchCommonRoutes();
+  }, []);
 
   /** 关闭移动端菜单（点击任意导航项后） */
   const closeMenu = () => setMenuOpen(false);
