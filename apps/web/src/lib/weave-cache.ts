@@ -34,15 +34,23 @@ function layoutKey(worldId: string, categoryId: string): string {
 
 /**
  * 读画布快照：优先内存，其次 sessionStorage，最后 localStorage。
+ *
+ * 返回值里的 `source` 很关键：内存快照与本次会话的画布内容一致，节点 id 可以直接信任；
+ * 而 sessionStorage / localStorage 里的快照是**上一次会话**留下的，节点 id 可能还是
+ * 父页面尚未替换的临时 id，不能拿去当「已存在于数据库的条目 id」用。
+ *
  * @param worldId 世界 id
  * @param categoryId 分类 id
- * @returns 画布存档或 null
+ * @returns 画布存档（带来源标记）或 null
  */
-export function readSnapshot(worldId: string, categoryId: string): WeavePayload | null {
+export function readSnapshot(
+  worldId: string,
+  categoryId: string,
+): { payload: WeavePayload; source: "memory" | "storage" } | null {
   const key = cacheKey(worldId, categoryId);
   const cached = memorySnapshot.get(key);
   if (cached) {
-    return cached;
+    return { payload: cached, source: "memory" };
   }
   for (const storage of [safeSession(), safeLocal()]) {
     if (!storage) {
@@ -56,7 +64,7 @@ export function readSnapshot(worldId: string, categoryId: string): WeavePayload 
       const payload = JSON.parse(raw) as WeavePayload;
       if (Array.isArray(payload?.nodes)) {
         memorySnapshot.set(key, payload);
-        return payload;
+        return { payload, source: "storage" };
       }
     } catch {
       // 缓存损坏时忽略，走接口加载

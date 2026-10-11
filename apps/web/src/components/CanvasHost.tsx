@@ -56,6 +56,34 @@ function setCanvasReadOnly(readOnly: boolean): void {
 const SAVE_MAX_ATTEMPTS = 2;
 
 /**
+ * 把画布上的节点 id 换成数据库里的真实条目 id。
+ *
+ * 使用场景：画布上新建的节点自带 Weave 生成的临时 id，父页面为它创建条目后拿到真实 id，
+ * 必须把画布上那个临时 id 换掉——否则下一轮同步又会把同一个节点当成「新增」，
+ * 于是重复创建条目（实测曾因此把世界刷出 276 条重复条目）。
+ *
+ * @param payload 当前画布存档
+ * @param idMap 临时节点 id → 真实条目 id
+ * @returns 替换后的新存档（连接与分区里的引用一并跟着换）
+ */
+function rewriteNodeIds(payload: WeavePayload, idMap: Map<string, string>): WeavePayload {
+  const map = (id: string): string => idMap.get(id) ?? id;
+  return {
+    ...payload,
+    nodes: payload.nodes.map((node) => ({ ...node, id: map(node.id) })),
+    connections: payload.connections.map((connection) => ({
+      ...connection,
+      from: map(connection.from),
+      to: map(connection.to),
+    })),
+    regions: (payload.regions ?? []).map((region) => ({
+      ...region,
+      nodeIds: (region.nodeIds ?? []).map(map),
+    })),
+  };
+}
+
+/**
  * 把条目正文与关联写回数据库，遇到版本冲突（409）时用服务端给的最新版本重试一次。
  *
  * 为什么必须重试：画布是多节点批量写回，同一条目可能被两次合并同时处理（或用户在另一处
@@ -334,6 +362,37 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         } else {
           canvasInternals.setState({ phase: "ready", message: "已保存" });
         }
+
+        /**
+         * 5) 本轮新建了条目 → 把画布上的**临时 id 换成真实条目 id**。
+         *
+         * 不换会出大问题：画布节点一直是临时 id，下一轮同步又会把它当成「画布上新增的节点」，
+         * 于是重复 POST 建条目——实测已经因此把某个世界刷出 200 条重复条目。
+         * 换 id 只能整体重注入（Weave 的节点 id 与 DOM 缓存绑定），重注入后这份数据与数据库一致，
+         * 所以把它记为新的基线并缓存下来。
+         */
+        if (idMap.size > 0) {
+          const renamed = rewriteNodeIds(payload, idMap);
+          pushToCanvas(renamed, payloadCategory);
+          writeLayout(world.id, payloadCategory, renamed);
+          writeSnapshot(world.id, payloadCategory, renamed);
+          rememberBaseline(renamed);
+          edgeSetsRef.current = outgoingByNode(renamed);
+          // 画布上的 id 变了：缓存里的 key 也要跟着换，否则下一轮又会误判成新节点
+          const renamedDetails = new Map<string, EntryDetail>();
+          for (const [tempId, realId] of idMap) {
+            const detail = detailCacheRef.current.get(tempId);
+            if (detail) {
+              renamedDetails.set(realId, detail);
+            }
+          }
+          for (const [key, detail] of detailCacheRef.current) {
+            if (!idMap.has(key)) {
+              renamedDetails.set(key, detail);
+            }
+          }
+          detailCacheRef.current = renamedDetails;
+        }
       } catch (err) {
         canvasInternals.setState({ phase: "error", message: `同步失败：${(err as Error).message}` });
       } finally {
@@ -391,14 +450,24 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
       // 1) 先用本地快照立刻上屏（切分类、切页面回来时几乎无感）
       const cached = force ? null : readSnapshot(targetWorldId, categoryId);
       if (cached) {
-        pushToCanvas(cached, categoryId);
-        rememberBaseline(cached);
+        /**
+         * 快照来源决定 id 能不能信：
+         *   · memory（本次会话）→ 节点 id 就是数据库 id，直接采信；
+         *   · storage（上次会话留下的）→ 里面的 id 可能是父页面还没替换的临时 id，
+         *     不能当成「已存在的条目」，因此清掉详情缓存，让本轮同步按 id 去接口取一次再判定。
+         */
+        if (cached.source === "storage") {
+          detailCacheRef.current = new Map();
+        }
+        const cachedPayload = cached.payload;
+        pushToCanvas(cachedPayload, categoryId);
+        rememberBaseline(cachedPayload);
         // 缓存上屏后要重置同步基线：缓存里的内容与画布当前内容一致，避免被当成「新改动」回写
-        edgeSetsRef.current = outgoingByNode(cached);
+        edgeSetsRef.current = outgoingByNode(cachedPayload);
         canvasInternals.setState({
           worldId: targetWorldId,
           categoryId,
-          snapshot: cached,
+          snapshot: cachedPayload,
           phase: "local",
           message: "已显示本地缓存，正在获取最新数据…",
         });
