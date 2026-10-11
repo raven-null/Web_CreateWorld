@@ -10869,7 +10869,10 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       // 调色板：文字直接写在颜色块里（彩色胶囊），颜色即分类名
       ".bridge-color{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0}",
       // 色点行：横向滚动条与全局同风格（细长），不再单独隐藏
-      ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:visible;padding:3px 0}",
+      // 色点行：横向可滚动但**不显示滚动条**（页面级不出现滚动条；内容区如节点列表仍保留细长滚动条）
+      ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:visible;padding:3px 0;",
+      "scrollbar-width:none;-ms-overflow-style:none}",
+      ".bridge-color-dots::-webkit-scrollbar{width:0;height:0;display:none}",
       // 胶囊：底色=颜色，说明文字写在里面；文字颜色由 JS 按亮度自适应（默认白字）
       // 高度固定 + 水平垂直都居中：padding 只留左右（上下不对称会让文字看起来偏），
       // 行高设为 1 并交给 flex 居中，避免不同字体的基线差异造成偏移
