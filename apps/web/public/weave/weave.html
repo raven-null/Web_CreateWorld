@@ -10233,11 +10233,56 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   }
 
   /**
+   * 在源节点旁边新建一个节点并建立关联。
+   *
+   * 复用 Weave 的 `_addNodeAt`（它会生成 id、按网格吸附、同步分区归属、保存并渲染），
+   * 之后把默认标题改成用户输入的名称，再补上连线。
+   *
+   * @param {object} source 源节点
+   * @param {"in"|"out"} dir 方向：out = 新节点放在右侧并连「源 → 新」，in = 放左侧并连「新 → 源」
+   * @param {string} title 新节点标题
+   * @returns {boolean} 是否创建成功
+   */
+  function createNodeBeside(source, dir, title) {
+    if (typeof App._addNodeAt !== "function") {
+      return false;
+    }
+    var isOut = dir !== "in";
+    var gap = 40;
+    var sourceW = source.w || 170;
+    var x = isOut ? source.x + sourceW + gap : source.x - sourceW - gap;
+    var y = source.y;
+
+    var newId = App._addNodeAt(x, y, true);
+    if (!newId) {
+      return false;
+    }
+    var node = App._getNodeById ? App._getNodeById(newId) : null;
+    if (node) {
+      node.label = String(title || "").trim().slice(0, 60) || "未命名条目";
+      // 直接改数据后同步一次显示与存档（避免再走一次完整 renderCanvas）
+      if (typeof App._updateNodeAppearance === "function") {
+        var el = App._nodeElMap && App._nodeElMap.get(newId);
+        if (el) {
+          App._updateNodeAppearance(el, node);
+        }
+      }
+      App.saveCanvasSnapshot();
+      if (typeof App.renderCanvas === "function") {
+        App.renderCanvas({ center: false });
+      }
+    }
+    connectNodes(isOut ? source.id : newId, isOut ? newId : source.id);
+    log("已新建节点并连接：", title);
+    return true;
+  }
+
+  /**
    * 打开「选择节点」弹窗：从某个连接点拖出去时，用来挑选要连到的节点。
    *
    * 为什么需要它：Weave 原本要在拖动中精确落到另一个节点很小的连接点上，
-   * 节点多、画布缩小之后几乎点不准（触屏更明显）。这里改为列出当前画布的所有节点，
-   * 点一下就连上；也支持输入关键字过滤。
+   * 节点多、画布缩小之后几乎点不准（触屏更明显）。这里列出当前画布的所有节点，
+   * 点一下就连上；也能**直接建一个新节点**（创作时常常是新关系先出现、节点随后才写）。
    *
    * @param {string} sourceId 起始节点 id
    * @param {"in"|"out"} dir 从哪个连接点拖出的：out = 本节点 → 目标，in = 目标 → 本节点
@@ -10296,9 +10341,15 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       "</strong>」连出　·　方向：" +
       arrow +
       "</p>" +
+      // 直接新建一个节点并连上（创作时常常先有关系、节点随后才写）
+      '<div class="bridge-picker-create">' +
+      '<input type="text" class="bridge-palette-text" id="bridgePickerNewTitle" placeholder="新建一个条目，如：刻痕的来历" maxlength="60" autocomplete="off" />' +
+      '<button type="button" class="bridge-palette-btn primary" id="bridgePickerCreate">新建并连接</button>' +
+      "</div>" +
       (nodes.length > 0
-        ? '<input type="text" class="bridge-palette-text" id="bridgePickerSearch" placeholder="搜索节点标题…" autocomplete="off" />'
-        : "") +
+        ? '<div class="bridge-picker-divider"><span>或选择一个已有节点</span></div>' +
+          '<input type="text" class="bridge-palette-text" id="bridgePickerSearch" placeholder="搜索节点标题…" autocomplete="off" />'
+        : '<div class="bridge-picker-divider"><span>画布上还没有别的节点</span></div>') +
       '<div class="bridge-node-list">' +
       rows +
       "</div>" +
@@ -10309,9 +10360,42 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       "</div>";
     box.style.display = "flex";
 
+    /** 取「新建节点」输入框里的名称 */
+    var newTitleInput = document.getElementById("bridgePickerNewTitle");
     var search = document.getElementById("bridgePickerSearch");
+
+    // 「新建并连接」：在源节点旁边建节点并连上
+    var createButton = document.getElementById("bridgePickerCreate");
+    if (createButton) {
+      createButton.addEventListener("click", function () {
+        var title = newTitleInput ? newTitleInput.value : "";
+        if (!String(title).trim()) {
+          if (newTitleInput) {
+            newTitleInput.focus();
+          }
+          return;
+        }
+        closeNodePicker();
+        createNodeBeside(source, dir, title);
+      });
+    }
+    if (newTitleInput) {
+      newTitleInput.focus();
+      newTitleInput.addEventListener("keydown", function (event) {
+        event.stopPropagation();
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeNodePicker();
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          if (createButton) {
+            createButton.click();
+          }
+        }
+      });
+    }
+
     if (search) {
-      search.focus();
       search.addEventListener("input", function () {
         var keyword = search.value.trim().toLowerCase();
         var list = box.querySelectorAll(".bridge-node-row");
@@ -10869,6 +10953,13 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       ".bridge-node-desc{font-size:11.5px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;",
       "white-space:nowrap}",
       ".bridge-node-empty{font-size:12.5px;color:var(--text-faint);padding:10px 0}",
+      // 弹窗里「新建节点」一行与分隔
+      ".bridge-picker-create{display:flex;gap:8px;align-items:center;margin-top:4px}",
+      ".bridge-picker-create .bridge-palette-text{flex:1;min-width:0}",
+      ".bridge-picker-divider{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text-faint);",
+      "margin-top:2px}",
+      ".bridge-picker-divider::before,.bridge-picker-divider::after{content:'';flex:1;height:1px;",
+      "background:var(--border)}",
       ".bridge-swatch{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;",
       "transition:transform .15s,border-color .15s}",
       ".bridge-swatch:hover{transform:scale(1.12)}",
