@@ -1615,16 +1615,15 @@
       ".header .header-brand{display:none !important}",
       // 调色板：文字直接写在颜色块里（彩色胶囊），颜色即分类名
       ".bridge-color{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0}",
-      ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:visible;",
-      "scrollbar-width:none;padding:3px 0}",
-      ".bridge-color-dots::-webkit-scrollbar{display:none}",
+      // 色点行：横向滚动条与全局同风格（细长），不再单独隐藏
+      ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:visible;padding:3px 0}",
       // 胶囊：底色=颜色，说明文字写在里面；文字颜色由 JS 按亮度自适应（默认白字）
       ".bridge-pill{position:relative;display:inline-flex;align-items:center;flex-shrink:0;border-radius:999px;",
       "border:2px solid transparent;padding:4px 12px 5px;font-family:inherit;font-size:13px;font-weight:600;",
       "line-height:1.2;letter-spacing:.2px;cursor:pointer;text-shadow:0 1px 2px rgba(0,0,0,.35);",
       "transition:box-shadow .15s,transform .15s}",
       // 选中的胶囊整体高亮
-          ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.55)}",
+      ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.55)}",
       ".bridge-pill-label{white-space:nowrap;pointer-events:none}",
       // 拖拽排序：被拖的胶囊半透明 + 虚线框；拖动期间禁用文本选择
       ".bridge-pill.is-dragging{opacity:.65;border-style:dashed;border-color:#e8e0d3}",
@@ -1691,8 +1690,7 @@
       // 统计徽章贴最右
       ".header .bridge-badge{margin-left:12px;flex-shrink:0;white-space:nowrap}",
       // 窄屏：色点行允许横向滚动，统计徽章保持可见
-      "@media (max-width:820px){.header{gap:10px !important;padding:6px 10px !important}",
-      ".bridge-color-dots{overflow-x:auto;scrollbar-width:none}.bridge-color-dots::-webkit-scrollbar{display:none}}",
+      "@media (max-width:820px){.header{gap:10px !important;padding:6px 10px !important}}",
       "@media (max-height:620px){.bridge-color-dots{padding-bottom:9px}}",
     ].join("");
     document.head.appendChild(style);
@@ -1799,8 +1797,40 @@
   function injectTheme() {
     var style = document.createElement("style");
     style.id = "bridgeTheme";
-    style.textContent = [
+    /** 统一滚动条：细长、圆角、贴合深色主题（Weave 自带的写法质量参差，这里统一覆盖） */
+    var scrollbars = [
       ":root{",
+      "--cw-scroll-size:8px;",
+      "--cw-scroll-size-thin:6px;",
+      "--cw-scroll-thumb:rgba(201,161,92,.30);",
+      "--cw-scroll-thumb-hover:rgba(201,161,92,.65);",
+      "--cw-scroll-track:rgba(255,255,255,.045);",
+      "}",
+      // 全局：Firefox
+      "*{scrollbar-width:thin;scrollbar-color:var(--cw-scroll-thumb) transparent}",
+      // 全局：Chromium / WebKit
+      "*::-webkit-scrollbar{width:var(--cw-scroll-size);height:var(--cw-scroll-size)}",
+      "*::-webkit-scrollbar-track{background:var(--cw-scroll-track);border-radius:999px}",
+      "*::-webkit-scrollbar-thumb{background:var(--cw-scroll-thumb);border-radius:999px;",
+      "border:2px solid transparent;background-clip:content-box}",
+      "*::-webkit-scrollbar-thumb:hover{background:var(--cw-scroll-thumb-hover);background-clip:content-box}",
+      "*::-webkit-scrollbar-corner{background:transparent}",
+      "*::-webkit-scrollbar-button{display:none}",
+      // 浮动层（节点提示、详情浮层、确认弹窗里的清单）用更细的一档
+      "#nodeTip,#bridgeDetailDesc,.bridge-confirm-list,.settings-panel{",
+      "scrollbar-width:thin;scrollbar-color:var(--cw-scroll-thumb) transparent}",
+      "#nodeTip::-webkit-scrollbar,#bridgeDetailDesc::-webkit-scrollbar,.bridge-confirm-list::-webkit-scrollbar,",
+      ".settings-panel::-webkit-scrollbar{width:var(--cw-scroll-size-thin);height:var(--cw-scroll-size-thin)}",
+      // 节点描述这类超小区域用最细的一档，别把文字挤掉
+      ".node-val{scrollbar-width:thin;scrollbar-color:var(--cw-scroll-thumb) transparent}",
+      ".node-val::-webkit-scrollbar{width:4px;height:4px}",
+      ".node-val::-webkit-scrollbar-thumb{background:var(--cw-scroll-thumb);border-radius:999px}",
+      ".node-val::-webkit-scrollbar-track{background:transparent}",
+    ].join("");
+    style.textContent =
+      scrollbars +
+      [
+        ":root{",
       "--bg-page:#14120f;",
       "--bg-card:#221e19;",
       "--bg-hover:#2b261f;",
