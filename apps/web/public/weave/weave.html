@@ -9188,9 +9188,11 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
         custom: Array.isArray(parsed.custom) ? parsed.custom.filter(isHexColor) : [],
         hidden: Array.isArray(parsed.hidden) ? parsed.hidden : [],
         labels: parsed.labels && typeof parsed.labels === "object" ? parsed.labels : {},
+        // 顺序表：记录用户拖拽后的颜色排列（缺失时由 normalizeOrder 补全）
+        order: Array.isArray(parsed.order) ? parsed.order : [],
       };
     } catch (error) {
-      return { version: 1, custom: [], hidden: [], labels: {} };
+      return { version: 1, custom: [], hidden: [], labels: {}, order: [] };
     }
   }
 
@@ -9243,32 +9245,90 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   }
 
   /**
-   * 取当前要展示的颜色列表（隐藏的不出现）。
+   * 补全调色板的顺序表：把「存在但不在 order 里」的颜色追加到末尾
+   * （旧数据兼容——早期版本没有 order 字段）。就地修改传入的 palette。
+   * @param {object} palette 调色板配置
+   * @returns {string[]} 有效的顺序数组
+   */
+  function normalizeOrder(palette) {
+    var known = [];
+    for (var i = 0; i < PRESET_DEFS.length; i += 1) {
+      known.push(PRESET_DEFS[i].color);
+    }
+    for (var j = 0; j < palette.custom.length; j += 1) {
+      known.push(palette.custom[j]);
+    }
+    var order = Array.isArray(palette.order) ? palette.order : [];
+    // 去掉已不存在的颜色，保持原顺序
+    order = order.filter(function (color, index) {
+      return known.indexOf(color) >= 0 && order.indexOf(color) === index;
+    });
+    // 补齐缺失的（旧数据或新添加）
+    for (var k = 0; k < known.length; k += 1) {
+      if (order.indexOf(known[k]) < 0) {
+        order.push(known[k]);
+      }
+    }
+    palette.order = order;
+    return order;
+  }
+
+  /**
+   * 取当前要展示的颜色列表，顺序遵循用户的拖拽排序（隐藏的不出现）。
    * @returns {Array<{color: string, hex: string, label: string, custom: boolean}>}
    */
   function paletteItems() {
     var palette = readPalette();
+    var order = normalizeOrder(palette);
     var items = [];
-    for (var i = 0; i < PRESET_DEFS.length; i += 1) {
-      var preset = PRESET_DEFS[i];
-      if (palette.hidden.indexOf(preset.color) >= 0) {
-        continue;
-      }
-      items.push({
-        color: preset.color,
-        hex: preset.hex,
-        label: palette.labels[preset.color] || preset.label,
-        custom: false,
-      });
-    }
-    for (var j = 0; j < palette.custom.length; j += 1) {
-      var color = palette.custom[j];
+    for (var i = 0; i < order.length; i += 1) {
+      var color = order[i];
       if (palette.hidden.indexOf(color) >= 0) {
         continue;
       }
-      items.push({ color: color, hex: color, label: palette.labels[color] || color, custom: true });
+      var isPreset = false;
+      var defaultLabel = color;
+      for (var j = 0; j < PRESET_DEFS.length; j += 1) {
+        if (PRESET_DEFS[j].color === color) {
+          isPreset = true;
+          defaultLabel = PRESET_DEFS[j].label;
+          break;
+        }
+      }
+      items.push({
+        color: color,
+        hex: hexForColor(color),
+        label: palette.labels[color] || defaultLabel,
+        custom: !isPreset,
+      });
     }
     return items;
+  }
+
+  /**
+   * 重排颜色：把 color 移动到 targetColor 的位置。
+   *
+   * 说明：拖拽松手时用的是「按 DOM 实际顺序整体写回」（见 handlePillDragEnd），
+   * 比逐个移动更稳；这里保留一个单点移动的实现，供以后需要「上移/下移」这类菜单操作时复用。
+   * @param {string} color 被移动的颜色
+   * @param {string} targetColor 目标位置的颜色
+   */
+  function reorderPalette(color, targetColor) {
+    if (color === targetColor) {
+      return;
+    }
+    var palette = readPalette();
+    var order = normalizeOrder(palette).slice();
+    var from = order.indexOf(color);
+    var to = order.indexOf(targetColor);
+    if (from < 0 || to < 0) {
+      return;
+    }
+    order.splice(from, 1);
+    order.splice(to, 0, color);
+    palette.order = order;
+    writePalette(palette);
+    log("颜色顺序已更新：", order.join(" → "));
   }
 
   /**
@@ -9303,6 +9363,12 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     palette.hidden = palette.hidden.filter(function (item) {
       return item !== color;
     });
+    // 新颜色排到末尾
+    var order = Array.isArray(palette.order) ? palette.order : [];
+    if (order.indexOf(color) < 0) {
+      order.push(color);
+    }
+    palette.order = order;
     if (label) {
       palette.labels[color] = String(label).trim().slice(0, 10);
     }
@@ -9922,6 +9988,10 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       if (!target || !target.closest) {
         return;
       }
+      // 刚拖拽完的这一次点击不要当成选色
+      if (Date.now() < suppressClickUntil) {
+        return;
+      }
       if (target.closest(".bridge-add")) {
         openAddColorPanel();
         return;
@@ -9934,6 +10004,38 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       var all = container.querySelectorAll(".bridge-pill");
       for (var k = 0; k < all.length; k += 1) {
         all[k].classList.toggle("is-active", all[k].dataset.c === pill.dataset.c);
+      }
+    };
+
+    // 长按拖拽排序
+    container.onpointerdown = function (event) {
+      var pill = event.target && event.target.closest ? event.target.closest(".bridge-pill") : null;
+      if (!pill || event.button !== 0) {
+        return;
+      }
+      beginLongPress(pill, event.clientX, event.clientY);
+    };
+    container.onpointermove = function (event) {
+      // 还没进入拖拽状态就大幅移动 → 视为滚动/点选，放弃长按
+      if (dragState.active || !dragState.color) {
+        return;
+      }
+      if (Math.abs(event.clientX - dragState.startX) + Math.abs(event.clientY - dragState.startY) > LONG_PRESS_MOVE_TOLERANCE) {
+        clearLongPressTimer();
+        dragState = { active: false, color: "", startX: 0, startY: 0, moved: false };
+      }
+    };
+    container.onpointerup = function () {
+      // 长按计时期间松手：取消长按（这次仍是普通点击）
+      if (!dragState.active) {
+        clearLongPressTimer();
+        dragState = { active: false, color: "", startX: 0, startY: 0, moved: false };
+      }
+    };
+    container.onpointerleave = function () {
+      if (!dragState.active) {
+        clearLongPressTimer();
+        dragState = { active: false, color: "", startX: 0, startY: 0, moved: false };
       }
     };
 
@@ -9961,6 +10063,159 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       }
       hidePillMenu();
     });
+  }
+
+  // ---------- 长按拖拽排序 ----------
+
+  /** 长按判定时长（毫秒）：按住这么久才开始拖拽 */
+  var LONG_PRESS_MS = 350;
+
+  /** 长按期间的容错位移：超过这个距离就当成普通手势（滚动/点选）而放弃拖拽 */
+  var LONG_PRESS_MOVE_TOLERANCE = 8;
+
+  /** 拖拽状态 */
+  var dragState = { active: false, color: "", startX: 0, startY: 0, moved: false };
+
+  /** 刚结束拖拽的时间戳：用来抑制紧随其后的 click（否则会顺手改了默认色） */
+  var suppressClickUntil = 0;
+
+  /** 长按计时器 */
+  var longPressTimer = null;
+
+  /** 取消长按计时 */
+  function clearLongPressTimer() {
+    if (longPressTimer !== null) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  }
+
+  /**
+   * 结束拖拽：清理监听与视觉状态；移动过则重绘一次（顺序已由写回过程保存）。
+   * @param {boolean} commit 是否在移动后重绘
+   */
+  function endPillDrag(commit) {
+    clearLongPressTimer();
+    if (!dragState.active) {
+      dragState = { active: false, color: "", startX: 0, startY: 0, moved: false };
+      return;
+    }
+    var dragged = document.querySelector(".bridge-pill.is-dragging");
+    if (dragged) {
+      dragged.classList.remove("is-dragging");
+    }
+    // 抑制紧随其后的 click：否则松手会顺手把「默认色」改成被拖的那个
+    suppressClickUntil = Date.now() + 200;
+    var moved = dragState.moved;
+    dragState = { active: false, color: "", startX: 0, startY: 0, moved: false };
+    document.body.classList.remove("bridge-dragging");
+    document.removeEventListener("pointermove", handlePillDragMove, true);
+    document.removeEventListener("pointerup", handlePillDragEnd, true);
+    document.removeEventListener("pointercancel", handlePillDragEnd, true);
+    if (commit && moved) {
+      buildColorDots();
+    }
+  }
+
+  /**
+   * 拖拽中：把被拖的胶囊插入到指针当前所在的胶囊之前/之后。
+   * 直接重排 DOM，松手后再保存顺序（视觉上跟手，且期间不写 localStorage）。
+   * @param {PointerEvent} event 指针事件
+   */
+  function handlePillDragMove(event) {
+    if (!dragState.active) {
+      return;
+    }
+    event.preventDefault();
+    var container = document.getElementById(COLOR_DOTS_ID);
+    if (!container) {
+      return;
+    }
+    var dragged = container.querySelector('.bridge-pill[data-c="' + dragState.color + '"]');
+    if (!dragged) {
+      return;
+    }
+    var pills = container.querySelectorAll(".bridge-pill");
+    var reference = null;
+    for (var i = 0; i < pills.length; i += 1) {
+      var pill = pills[i];
+      if (pill === dragged) {
+        continue;
+      }
+      var rect = pill.getBoundingClientRect();
+      if (event.clientX < rect.left + rect.width / 2) {
+        reference = pill;
+        break;
+      }
+    }
+    if (reference) {
+      if (dragged.nextSibling !== reference) {
+        container.insertBefore(dragged, reference);
+        dragState.moved = true;
+      }
+    } else if (container.lastElementChild !== dragged) {
+      // 拖到最右：插到所有胶囊之后（但保持在「＋ 添加」按钮之前）
+      var addButton = container.querySelector(".bridge-add");
+      container.insertBefore(dragged, addButton);
+      dragState.moved = true;
+    }
+  }
+
+  /**
+   * 松手：按当前 DOM 顺序写入排序表。
+   * @param {PointerEvent} event 指针事件
+   */
+  function handlePillDragEnd() {
+    var container = document.getElementById(COLOR_DOTS_ID);
+    var draggedColor = dragState.color;
+    var moved = dragState.moved;
+    var sequence = [];
+    if (container) {
+      var pills = container.querySelectorAll(".bridge-pill");
+      for (var i = 0; i < pills.length; i += 1) {
+        sequence.push(pills[i].dataset.c);
+      }
+    }
+    var wasActive = dragState.active;
+    endPillDrag(false);
+    if (!wasActive || !moved || sequence.length === 0) {
+      return;
+    }
+    // 按拖拽后的实际顺序整体写回（比「移动某一个」更稳）
+    var palette = readPalette();
+    palette.order = sequence;
+    writePalette(palette);
+    log("颜色顺序已更新：", sequence.join(" → "));
+    void draggedColor;
+    buildColorDots();
+  }
+
+  /**
+   * 在胶囊上开始长按 → 进入拖拽。
+   * @param {HTMLElement} pill 胶囊元素
+   * @param {number} clientX 指针 x
+   * @param {number} clientY 指针 y
+   */
+  function beginLongPress(pill, clientX, clientY) {
+    clearLongPressTimer();
+    dragState = { active: false, color: pill.dataset.c, startX: clientX, startY: clientY, moved: false };
+    longPressTimer = window.setTimeout(function () {
+      longPressTimer = null;
+      if (!dragState.color) {
+        return;
+      }
+      dragState.active = true;
+      var current = document.querySelector('.bridge-pill[data-c="' + dragState.color + '"]');
+      if (current) {
+        current.classList.add("is-dragging");
+      }
+      document.body.classList.add("bridge-dragging");
+      hidePillMenu();
+      log("开始拖拽排序：", dragState.color);
+      document.addEventListener("pointermove", handlePillDragMove, true);
+      document.addEventListener("pointerup", handlePillDragEnd, true);
+      document.addEventListener("pointercancel", handlePillDragEnd, true);
+    }, LONG_PRESS_MS);
   }
 
   // 视图变化时菜单会错位，直接收起
@@ -10023,6 +10278,10 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       // 选中的胶囊整体高亮
           ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.55)}",
       ".bridge-pill-label{white-space:nowrap;pointer-events:none}",
+      // 拖拽排序：被拖的胶囊半透明 + 虚线框；拖动期间禁用文本选择
+      ".bridge-pill.is-dragging{opacity:.65;border-style:dashed;border-color:#e8e0d3}",
+      "body.bridge-dragging{cursor:grabbing !important;user-select:none !important}",
+      ".bridge-color-dots{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}",
       // 悬浮操作菜单：挂在 body 上、fixed 定位，不受色点行 overflow 裁剪
       ".bridge-pill-menu{position:fixed;z-index:1500;display:none;gap:2px;padding:3px;border-radius:8px;",
       "background:var(--bg-card);border:1px solid var(--border-light);box-shadow:var(--shadow-lg);white-space:nowrap}",
