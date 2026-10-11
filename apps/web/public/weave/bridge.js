@@ -316,8 +316,11 @@
         }
         var stage = document.getElementById("canvasStage");
         if (stage && App.scale) {
-          App.panX = stage.clientWidth / 2 - focusNode.x * App.scale;
-          App.panY = stage.clientHeight / 2 - focusNode.y * App.scale;
+          // 目标缩放：太远看不清、太近又失去上下文，因此限制在 0.7~1.2 之间
+          var targetScale = Math.min(1.2, Math.max(0.7, App.scale));
+          App.scale = targetScale;
+          App.panX = stage.clientWidth / 2 - focusNode.x * targetScale;
+          App.panY = stage.clientHeight / 2 - focusNode.y * targetScale;
         }
         if (typeof App._renderNodes === "function") {
           App._renderNodes();

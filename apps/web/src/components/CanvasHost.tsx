@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError, api } from "../lib/api";
 import {
   buildCanvasPayload,
@@ -119,6 +119,7 @@ async function saveEntryBlocks(
  */
 export default function CanvasHost({ worldId, active }: { worldId: string; active: boolean }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [frameReady, setFrameReady] = useState(false);
   /** 是否已经进过画布：没进过就完全不挂载 iframe，避免其它页面白下载 460KB 画布文件 */
@@ -482,7 +483,53 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     return subscribeCanvas(handle);
   }, [loadCanvas]);
 
-  // 页面下发的动作（激活 / 重新载入 / 停用）
+  /**
+   * 数据来源由 URL 决定：`?cat=<分类 id>` 指定要载入哪个分类的画布。
+   *
+   * 为什么不靠页面里的 dispatchCanvas：画布宿主是**常驻**的，页面组件的激活动作可能在
+   * 宿主挂载之前就发出、或在挂载后丢失（表现为画布空白）。直接读 URL 最可靠，
+   * 而且从条目列表点「画布」带过来的 cat / focus 参数也能一并处理。
+   */
+  useEffect(() => {
+    if (!active || !worldId) {
+      return;
+    }
+    const cat = new URLSearchParams(location.search).get("cat") ?? "";
+    if (!cat) {
+      return;
+    }
+    const current = canvasInternals.getState();
+    if (current.worldId === worldId && current.categoryId === cat) {
+      return;
+    }
+    void loadCanvas(worldId, cat);
+  }, [active, worldId, location.search, loadCanvas]);
+
+  /**
+   * 从条目列表带过来的定位参数 `?focus=<条目 id>`：数据就绪后把该节点居中并高亮。
+   * 每个 focus 值只处理一次，避免用户在画布上平移时被反复拉回。
+   */
+  const focusHandledRef = useRef("");
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    const focusId = new URLSearchParams(location.search).get("focus") ?? "";
+    if (!focusId || focusHandledRef.current === focusId) {
+      return;
+    }
+    if (state.phase !== "ready") {
+      return;
+    }
+    const frame = frameRef.current;
+    if (!frame) {
+      return;
+    }
+    focusHandledRef.current = focusId;
+    frame.contentWindow?.postMessage({ type: "weave:focus", nodeId: focusId }, window.location.origin);
+  }, [active, state.phase, location.search]);
+
+  // 页面下发的动作（重新载入 / 停用）
   useEffect(() => {
     return registerCanvasActionHandler((action) => {
       if (action.type === "activate") {

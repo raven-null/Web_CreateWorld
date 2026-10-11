@@ -302,7 +302,8 @@ a:hover {
 }
 
 .cw-loader-wrap.is-page {
-  min-height: 62vh;
+  /* 整屏加载：按「视口高度 − 顶部导航」撑满并居中，避免只在区块高度里居中导致整体偏上 */
+  min-height: calc(100vh - 120px);
   padding: 32px 0;
 }
 
@@ -687,6 +688,51 @@ a:hover {
   color: var(--text-faint);
   font-size: 13px;
   white-space: nowrap;
+}
+
+/* 条目行 + 行末的「画布」定位按钮（行本身是链接，按钮不能嵌在链接里） */
+.entry-row-wrap {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.entry-row-wrap .entry-row {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.entry-row-locate {
+  flex-shrink: 0;
+  margin-left: 10px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+
+/* 平时不抢视线，鼠标停在行上才出现（键盘 Tab 聚焦时也显示） */
+.entry-row-wrap:hover .entry-row-locate,
+.entry-row-locate:focus-visible {
+  opacity: 1;
+}
+
+.entry-row-locate:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  text-decoration: none;
+}
+
+/* 触屏没有 hover：始终显示 */
+@media (max-width: 768px) {
+  .entry-row-locate {
+    opacity: 1;
+  }
 }
 
 /* ============ 条目阅读 ============ */

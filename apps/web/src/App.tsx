@@ -23,6 +23,7 @@ const NewWorldPage = lazy(() => import("./pages/NewWorldPage"));
 const WorldPage = lazy(() => import("./pages/WorldPage"));
 const WorldSettingsPage = lazy(() => import("./pages/WorldSettingsPage"));
 const WorldCanvasPage = lazy(() => import("./pages/WorldCanvasPage"));
+const WorldEntriesPage = lazy(() => import("./pages/WorldEntriesPage"));
 const MapsPage = lazy(() => import("./pages/MapsPage"));
 const WorldTimelinePage = lazy(() => import("./pages/WorldTimelinePage"));
 const SearchPage = lazy(() => import("./pages/SearchPage"));

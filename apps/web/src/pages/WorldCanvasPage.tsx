@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { colorOfCategory } from "../lib/weave-data";
-import { dispatchCanvas, useCanvasState } from "../lib/weave-store";
+import { useCanvasState } from "../lib/weave-store";
 import PageLoader from "../components/PageLoader";
 
 /** 世界信息（只为取分类列表） */
@@ -44,15 +44,15 @@ export default function WorldCanvasPage() {
     return world?.categories[0]?.id ?? "";
   }, [searchParams, world]);
 
-  // 分类确定后通知常驻画布宿主加载（世界或分类变化都会触发）
+  // 注意：真正载入哪一个分类的画布由常驻的 CanvasHost 按 URL 的 ?cat= 处理。
+  // 页面只负责保证 URL 里始终带着分类（首次进入时补一个默认值）。
   useEffect(() => {
-    if (!worldId || !activeCategoryId) {
-      return;
+    if (world && !searchParams.get("cat") && activeCategoryId) {
+      setSearchParams({ cat: activeCategoryId }, { replace: true });
     }
-    dispatchCanvas({ type: "activate", worldId, categoryId: activeCategoryId });
-  }, [activeCategoryId, worldId]);
+  }, [world, searchParams, activeCategoryId, setSearchParams]);
 
-  /** 切换分类：只改 URL 参数，画布宿主按新分类取数据（已有缓存则立即上屏） */
+  /** 切换分类：只改 URL 参数（保留 focus 等其它参数交给宿主处理） */
   const switchCategory = (categoryId: string) => {
     setSearchParams({ cat: categoryId }, { replace: true });
   };
