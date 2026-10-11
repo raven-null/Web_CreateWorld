@@ -932,6 +932,102 @@
   }
 
   /**
+   * 悬浮操作菜单（修改 / 删除）。
+   *
+   * 为什么不放在胶囊内部：色点行为了横向滚动设了 `overflow-x:auto`，而 CSS 规定
+   * 「一个轴不是 visible 时，另一个轴也会被当成 auto」——菜单放在胶囊里会被这一层裁掉（实测悬浮没反应）。
+   * 因此菜单挂在 body 上、用 position:fixed 按胶囊位置定位，彻底不受任何容器裁剪。
+   */
+  var pillMenuEl = null;
+  /** 当前菜单对应的颜色 */
+  var pillMenuColor = "";
+  /** 延迟关闭的定时器：留出鼠标从胶囊移到菜单上的时间 */
+  var pillMenuTimer = null;
+
+  /** 取（或创建）悬浮菜单元素 */
+  function ensurePillMenu() {
+    if (pillMenuEl && document.body.contains(pillMenuEl)) {
+      return pillMenuEl;
+    }
+    pillMenuEl = document.createElement("div");
+    pillMenuEl.className = "bridge-pill-menu";
+    pillMenuEl.style.display = "none";
+    pillMenuEl.innerHTML =
+      '<button type="button" class="bridge-pill-action" data-action="edit">修改</button>' +
+      '<button type="button" class="bridge-pill-action" data-action="remove">删除</button>';
+    pillMenuEl.addEventListener("click", function (event) {
+      // 阻止冒泡到 document：否则「点空白收起菜单」的全局监听会在本处理器之后触发
+      event.stopPropagation();
+      var action = event.target && event.target.closest ? event.target.closest(".bridge-pill-action") : null;
+      if (!action || !pillMenuColor) {
+        return;
+      }
+      var color = pillMenuColor;
+      hidePillMenu();
+      if (action.dataset.action === "remove") {
+        removePaletteColor(color);
+        buildColorDots();
+      } else {
+        openEditColorPanel(color);
+      }
+    });
+    // 鼠标进入菜单时取消关闭，离开则收起
+    pillMenuEl.addEventListener("mouseenter", function () {
+      if (pillMenuTimer !== null) {
+        clearTimeout(pillMenuTimer);
+        pillMenuTimer = null;
+      }
+    });
+    pillMenuEl.addEventListener("mouseleave", function () {
+      hidePillMenu();
+    });
+    document.body.appendChild(pillMenuEl);
+    return pillMenuEl;
+  }
+
+  /** 收起悬浮菜单 */
+  function hidePillMenu() {
+    if (pillMenuTimer !== null) {
+      clearTimeout(pillMenuTimer);
+      pillMenuTimer = null;
+    }
+    pillMenuColor = "";
+    if (pillMenuEl) {
+      pillMenuEl.style.display = "none";
+    }
+  }
+
+  /**
+   * 在胶囊附近显示悬浮菜单：默认贴其下方，下方空间不足时翻到上方。
+   * @param {HTMLElement} pill 胶囊元素
+   */
+  function showPillMenu(pill) {
+    var menu = ensurePillMenu();
+    var color = pill.dataset.c;
+    if (!color) {
+      return;
+    }
+    if (pillMenuTimer !== null) {
+      clearTimeout(pillMenuTimer);
+      pillMenuTimer = null;
+    }
+    pillMenuColor = color;
+    menu.style.display = "inline-flex";
+    // 先显示再量尺寸，保证定位准确
+    var rect = pill.getBoundingClientRect();
+    var menuRect = menu.getBoundingClientRect();
+    var gap = 6;
+    var top = rect.bottom + gap;
+    if (top + menuRect.height > window.innerHeight - 4) {
+      top = rect.top - menuRect.height - gap;
+    }
+    var left = rect.left + rect.width / 2 - menuRect.width / 2;
+    left = Math.max(6, Math.min(left, window.innerWidth - menuRect.width - 6));
+    menu.style.top = Math.round(top) + "px";
+    menu.style.left = Math.round(left) + "px";
+  }
+
+  /**
    * 重绘顶栏调色板：颜色即分类——说明文字直接写在颜色块里，可增删。
    *
    * 自己生成而不是用 Weave 的 `_buildDotPanel`：它把类名拼成「前缀 + '-dot'」
@@ -946,6 +1042,7 @@
     var items = paletteItems();
     var activeColor = App._selectedGenColor;
     container.innerHTML = "";
+    hidePillMenu();
 
     for (var i = 0; i < items.length; i += 1) {
       var item = items[i];
@@ -964,23 +1061,6 @@
       label.textContent = item.label;
       pill.appendChild(label);
 
-      // 悬浮才出现的操作：修改 / 删除
-      var actions = document.createElement("span");
-      actions.className = "bridge-pill-actions";
-      var editButton = document.createElement("button");
-      editButton.type = "button";
-      editButton.className = "bridge-pill-action";
-      editButton.dataset.action = "edit";
-      editButton.textContent = "修改";
-      var removeButton = document.createElement("button");
-      removeButton.type = "button";
-      removeButton.className = "bridge-pill-action";
-      removeButton.dataset.action = "remove";
-      removeButton.textContent = "删除";
-      actions.appendChild(editButton);
-      actions.appendChild(removeButton);
-      pill.appendChild(actions);
-
       container.appendChild(pill);
     }
 
@@ -995,40 +1075,56 @@
       '<line x1="5" y1="12" x2="19" y2="12"></line></svg>添加';
     container.appendChild(add);
 
-    // 事件委托：胶囊会随增删重建，逐个绑定容易漏
+    // 单击：选颜色 / 打开添加弹窗
     container.onclick = function (event) {
       var target = event.target;
       if (!target || !target.closest) {
         return;
       }
-      var pill = target.closest(".bridge-pill");
-      if (pill) {
-        var action = target.closest(".bridge-pill-action");
-        if (action) {
-          event.stopPropagation();
-          if (action.dataset.action === "remove") {
-            removePaletteColor(pill.dataset.c);
-          } else {
-            openEditColorPanel(pill.dataset.c);
-          }
-          buildColorDots();
-          return;
-        }
-        // 点胶囊本体 = 选这个颜色（新节点的默认色）
-        App._setGenColor(pill.dataset.c);
-        var all = container.querySelectorAll(".bridge-pill");
-        for (var k = 0; k < all.length; k += 1) {
-          all[k].classList.toggle("is-active", all[k].dataset.c === pill.dataset.c);
-        }
-        return;
-      }
       if (target.closest(".bridge-add")) {
         openAddColorPanel();
+        return;
+      }
+      var pill = target.closest(".bridge-pill");
+      if (!pill) {
+        return;
+      }
+      App._setGenColor(pill.dataset.c);
+      var all = container.querySelectorAll(".bridge-pill");
+      for (var k = 0; k < all.length; k += 1) {
+        all[k].classList.toggle("is-active", all[k].dataset.c === pill.dataset.c);
       }
     };
 
-    updateCurrentColor(activeColor);
+    // 悬浮：显示「修改 / 删除」
+    container.onmouseover = function (event) {
+      var pill = event.target && event.target.closest ? event.target.closest(".bridge-pill") : null;
+      if (pill) {
+        showPillMenu(pill);
+      }
+    };
+    container.onmouseleave = function () {
+      // 鼠标可能正移向菜单，延迟一点再收起
+      if (pillMenuTimer !== null) {
+        clearTimeout(pillMenuTimer);
+      }
+      pillMenuTimer = window.setTimeout(hidePillMenu, 180);
+    };
   }
+
+  /** 全局：点空白处收起悬浮菜单（只注册一次） */
+  function bindPillMenuGlobalEvents() {
+    document.addEventListener("click", function (event) {
+      if (event.target && event.target.closest && event.target.closest(".bridge-pill-menu")) {
+        return;
+      }
+      hidePillMenu();
+    });
+  }
+
+  // 视图变化时菜单会错位，直接收起
+  window.addEventListener("scroll", hidePillMenu, true);
+  window.addEventListener("resize", hidePillMenu);
 
   /**
    * 兼容保留的空实现：当前选中的颜色已由胶囊自身的高亮表达（.bridge-pill.is-active），
@@ -1084,13 +1180,11 @@
       "line-height:1.2;letter-spacing:.2px;cursor:pointer;text-shadow:0 1px 2px rgba(0,0,0,.35);",
       "transition:box-shadow .15s,transform .15s}",
       // 选中的胶囊整体高亮
-      ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.55)}",
+          ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.55)}",
       ".bridge-pill-label{white-space:nowrap;pointer-events:none}",
-      // 悬浮才出现的「修改 / 删除」
-      ".bridge-pill-actions{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);",
-      "display:none;z-index:130;gap:2px;padding:3px;border-radius:8px;background:var(--bg-card);",
-      "border:1px solid var(--border-light);box-shadow:var(--shadow-md);white-space:nowrap}",
-      ".bridge-pill:hover .bridge-pill-actions,.bridge-pill:focus-within .bridge-pill-actions{display:inline-flex}",
+      // 悬浮操作菜单：挂在 body 上、fixed 定位，不受色点行 overflow 裁剪
+      ".bridge-pill-menu{position:fixed;z-index:1500;display:none;gap:2px;padding:3px;border-radius:8px;",
+      "background:var(--bg-card);border:1px solid var(--border-light);box-shadow:var(--shadow-lg);white-space:nowrap}",
       ".bridge-pill-action{border:0;background:transparent;color:var(--text-secondary);font-family:inherit;",
       "font-size:12px;line-height:1.6;padding:2px 10px;border-radius:5px;cursor:pointer;white-space:nowrap}",
       ".bridge-pill-action:hover{background:var(--bg-hover);color:var(--text-primary)}",
@@ -1345,6 +1439,7 @@
     rebuildHeader();
     buildColorDots();
     bindPalettePanelEvents();
+    bindPillMenuGlobalEvents();
     startNodeColorSync();
     injectNodeColorStyle();
     injectHeaderStyle();
