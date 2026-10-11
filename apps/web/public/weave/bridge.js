@@ -445,6 +445,11 @@
     if (addNode) {
       addNode.remove();
     }
+    // 侧边栏的「导出 PNG」按钮也移除：导出已整合到顶栏的导出菜单里
+    var pngButton = document.getElementById("btnExportPNG");
+    if (pngButton) {
+      pngButton.remove();
+    }
     // 原颜色下拉（触发器 + 折叠面板）不再使用，色点改为平铺
     if (colorDrop && colorDrop.parentNode) {
       colorDrop.parentNode.removeChild(colorDrop);
@@ -1467,6 +1472,67 @@
     log("已接管「清空」按钮：改用主题确认弹窗");
   }
 
+  // ---------- 修复：侧边栏「框选模式」对鼠标无效 ----------
+
+  /**
+   * 包装 `App.onCanvasMouseDown`，让「框选模式」对鼠标也生效。
+   *
+   * Weave 的框选分支条件是 `e.shiftKey`（真实 Shift 键），而侧边栏「框选」按钮只把
+   * `_boxModeActive` 置为 true；该标记仅在**触控路径**里被转成 shift（`_touchBeginDrag` 补发
+   * mousedown 时传 `{ shift: this._boxModeActive }`），鼠标路径没有任何转换——
+   * 于是开了框选模式，鼠标拖拽空白处仍然只是平移，看起来「框选不能用」。
+   *
+   * 这里在鼠标事件进入原逻辑前补上同样的转换：模式开启时把事件当成带 Shift 处理，
+   * 与触控路径的行为保持一致（框选模式下无法平移画布属于该模式的既有语义）。
+   */
+  function wrapBoxSelectMode() {
+    if (typeof App.onCanvasMouseDown !== "function" || App._cwBoxModeWrapped) {
+      return;
+    }
+    var originalDown = App.onCanvasMouseDown.bind(App);
+    App._cwBoxModeWrapped = true;
+
+    App.onCanvasMouseDown = function (event) {
+      if (!App._boxModeActive || !event || event.shiftKey) {
+        return originalDown(event);
+      }
+      // shiftKey 是只读属性，复制一个带 shift 的事件交回原逻辑
+      var patched;
+      try {
+        patched = new window.MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          button: event.button,
+          buttons: event.buttons,
+          shiftKey: true,
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+        });
+      } catch (error) {
+        // 极端情况下退化为直接改属性（旧引擎的 MouseEvent 允许写入）
+        try {
+          event.shiftKey = true;
+          patched = event;
+        } catch (inner) {
+          patched = event;
+        }
+      }
+      return originalDown(patched);
+    };
+    log("已修复：侧边栏「框选模式」对鼠标生效");
+  }
+
+  /** 从右到左：给 Weave 的「框选」按钮补一句说明 */
+  function annotateBoxModeButton() {
+    var button = document.getElementById("btnBox");
+    if (button) {
+      button.title = "框选模式：开启后拖拽画布空白处即可框选多个节点";
+    }
+  }
+
   // ---------- 导出按钮：悬浮弹出「数据 / 图片」两个选项 ----------
 
   /** 导出菜单元素与隐藏定时器 */
@@ -2146,6 +2212,8 @@
     bindPalettePanelEvents();
     bindPillMenuGlobalEvents();
     wrapClearAllNodes();
+    wrapBoxSelectMode();
+    annotateBoxModeButton();
     bindExportMenu();
     bindExportMenuGlobalEvents();
     startNodeColorSync();
