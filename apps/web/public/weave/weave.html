@@ -10199,40 +10199,64 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     left = Math.max(6, Math.min(left, window.innerWidth - menuRect.width - 6));
     menu.style.top = Math.round(top) + "px";
     menu.style.left = Math.round(left) + "px";
+    log("导出菜单已显示于", Math.round(left) + "," + Math.round(top), "尺寸", menuRect.width + "x" + menuRect.height);
   }
 
   /**
    * 给「导出」按钮挂上悬浮菜单：鼠标停留即弹出「数据 / 图片」。
    * 用 fixed 定位的独立菜单（同胶囊菜单的做法），不受顶栏布局与裁切影响。
    */
+  /**
+   * 给「导出」按钮挂上悬浮菜单。
+   *
+   * 这里只做「标记 + 初始化」，实际事件用**事件委托**（见 bindExportMenuGlobalEvents）：
+   * 顶栏按钮在桥启动之后仍可能被重建，直接绑在按钮上的监听会随之失效（上一版就是这样没反应）。
+   */
   function bindExportMenu() {
     var button = document.getElementById("btnDoExport");
-    if (!button || button.dataset.cwExportBound === "1") {
+    if (!button) {
+      log("未找到导出按钮，悬浮菜单未启用");
       return;
     }
-    button.dataset.cwExportBound = "1";
     button.title = "导出：数据（JSON）或图片（PNG）";
-    button.addEventListener("mouseenter", function () {
-      showExportMenu(button);
-    });
-    button.addEventListener("mouseleave", function () {
-      if (exportMenuTimer !== null) {
-        clearTimeout(exportMenuTimer);
-      }
-      // 留出鼠标移到菜单上的时间
-      exportMenuTimer = window.setTimeout(hideExportMenu, 180);
-    });
-    button.addEventListener("click", function () {
-      // 鼠标用户已经由 hover 弹出菜单；触屏没有 hover，点一下也把菜单弹出来
-      showExportMenu(button);
-    });
-    log("已为「导出」挂上悬浮菜单（数据 / 图片）");
+    if (button.dataset.cwExportBound !== "1") {
+      button.dataset.cwExportBound = "1";
+      button.addEventListener("click", function () {
+        // 鼠标用户由 hover 弹出；触屏没有 hover，点一下就弹出来
+        showExportMenu(button);
+      });
+    }
+    log("已启用「导出」悬浮菜单（数据 / 图片）");
   }
 
-  /** 全局：点击空白处收起导出菜单（只注册一次） */
+  /** 全球：导出按钮与菜单的悬浮/离开都走事件委托，避免按钮重建后失效 */
   function bindExportMenuGlobalEvents() {
+    document.addEventListener("mouseover", function (event) {
+      var target = event.target;
+      if (!target || !target.closest) {
+        return;
+      }
+      if (target.closest("#btnDoExport")) {
+        if (exportMenuEl && exportMenuEl.style.display !== "none") {
+          return;
+        }
+        var button = document.getElementById("btnDoExport");
+        if (button) {
+          showExportMenu(button);
+        }
+        return;
+      }
+      // 鼠标从菜单移出去 → 延迟收起（留出移到菜单上的时间）
+      if (exportMenuEl && exportMenuEl.style.display !== "none" && !target.closest(".bridge-export-menu")) {
+        if (exportMenuTimer !== null) {
+          clearTimeout(exportMenuTimer);
+        }
+        exportMenuTimer = window.setTimeout(hideExportMenu, 220);
+      }
+    });
     document.addEventListener("click", function (event) {
-      if (event.target && event.target.closest && event.target.closest(".bridge-export-menu")) {
+      var target = event.target;
+      if (target && target.closest && target.closest(".bridge-export-menu")) {
         return;
       }
       hideExportMenu();
