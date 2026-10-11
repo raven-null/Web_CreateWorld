@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import PageLoader from "./components/PageLoader";
 import DiscoverPage from "./pages/DiscoverPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -33,9 +34,9 @@ const AdminPage = lazy(() => import("./pages/AdminPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
 
-/** 懒加载页面的占位 */
+/** 懒加载页面的占位：用统一的翻页加载动画，避免切换路由时出现空白或文字跳变 */
 function PageLoading() {
-  return <div className="loading">加载中…</div>;
+  return <PageLoader variant="page" />;
 }
 
 /**
@@ -61,8 +62,9 @@ export default function App() {
               <Route path="maps" element={<MapsPage />} />
               <Route path="timeline" element={<WorldTimelinePage />} />
               <Route path="search" element={<SearchPage />} />
-              {/* 条目列表与关系图已由画布取代：旧地址重定向到画布，避免既有书签失效 */}
-              <Route path="entries" element={<Navigate to="../canvas" replace />} />
+              {/* 条目列表：画布之外的表格视图（新建 / 搜索 / 分类筛选 / 一键回到画布定位） */}
+              <Route path="entries" element={<WorldEntriesPage />} />
+              {/* 关系图已由画布取代：旧地址重定向，避免既有书签失效 */}
               <Route path="graph" element={<Navigate to="../canvas" replace />} />
               <Route path="entries/:entryId" element={<EntryViewPage />} />
               <Route path="entries/:entryId/versions" element={<EntryVersionsPage />} />

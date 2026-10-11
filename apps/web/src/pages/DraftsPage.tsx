@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
 import { formatTime } from "../lib/format";
 import { showToast } from "../lib/toast";
+import PageLoader from "../components/PageLoader";
 
 /** 草稿项 */
 interface DraftItem {
@@ -166,7 +167,7 @@ export default function DraftsPage() {
   };
 
   if (isPending) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
   if (!session) {
     return (
@@ -210,7 +211,7 @@ export default function DraftsPage() {
         </div>
       </form>
 
-      {loading && <div className="loading">加载中…</div>}
+      {loading && <PageLoader variant="block" label="加载中…" />}
       {!loading && drafts.length === 0 && <div className="empty">草稿箱是空的</div>}
 
       <div className="draft-list">

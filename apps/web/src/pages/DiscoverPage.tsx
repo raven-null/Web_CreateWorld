@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { VISIBILITY_LABELS, type WorldSummary } from "@create-world/core";
 import { ApiError, api } from "../lib/api";
 import { formatTime } from "../lib/format";
+import PageLoader from "../components/PageLoader";
 
 /**
  * 发现首页：公开世界列表，支持标签筛选与排序切换。
@@ -124,11 +125,14 @@ export default function DiscoverPage() {
         </div>
       )}
       {loading && (
-        <div className="loading">
-          {elapsedSeconds >= 4
-            ? `正在加载…已等待 ${elapsedSeconds} 秒（网络较慢或连不上，会自动重试一次）`
-            : "加载中…"}
-        </div>
+        <PageLoader
+          variant="page"
+          label={
+            elapsedSeconds >= 4
+              ? `正在加载…已等待 ${elapsedSeconds} 秒（网络较慢或连不上，会自动重试一次）`
+              : "加载中…"
+          }
+        />
       )}
       {!loading && !offline && worlds.length === 0 && <div className="empty">还没有公开的世界，去创建第一个吧</div>}
 

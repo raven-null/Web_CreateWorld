@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { colorOfCategory } from "../lib/weave-data";
 import { dispatchCanvas, useCanvasState } from "../lib/weave-store";
+import PageLoader from "../components/PageLoader";
 
 /** 世界信息（只为取分类列表） */
 interface WorldInfo {
@@ -60,7 +61,7 @@ export default function WorldCanvasPage() {
     return <div className="notice error">{error}</div>;
   }
   if (!world) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
   if (world.categories.length === 0) {
     return (

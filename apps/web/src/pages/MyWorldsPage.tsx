@@ -5,6 +5,7 @@ import { api, clearApiCache } from "../lib/api";
 import { authClient } from "../lib/auth-client";
 import { formatTime } from "../lib/format";
 import { showToast } from "../lib/toast";
+import PageLoader from "../components/PageLoader";
 
 /** 导入文件预览摘要 */
 interface ImportSummary {
@@ -142,7 +143,7 @@ export default function MyWorldsPage() {
   };
 
   if (isPending) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
   if (!session) {
     return (
@@ -170,7 +171,7 @@ export default function MyWorldsPage() {
       </div>
 
       {error && <div className="notice error">{error}</div>}
-      {loading && <div className="loading">加载中…</div>}
+      {loading && <PageLoader variant="block" label="加载中…" />}
       {!loading && worlds.length === 0 && (
         <div className="empty">
           还没有世界，点击上方「创建新世界」开始，或从备份导入

@@ -6,6 +6,7 @@ import { ApiError, api } from "../lib/api";
 import { EntryLinkMark } from "../lib/entry-link-mark";
 import { showToast } from "../lib/toast";
 import { countDocWords, extractEntryLinks, parseDoc, type TipTapDoc } from "../lib/tiptap-json";
+import PageLoader from "../components/PageLoader";
 
 /** 条目详情接口返回结构 */
 interface EntryDetail {
@@ -363,7 +364,7 @@ export default function EntryEditPage() {
     return <div className="notice error">{loadError}</div>;
   }
   if (!detail) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
   if (!detail.canEdit) {
     return <div className="notice error">你没有该条目的编辑权限（受保护条目仅管理员可编辑）</div>;

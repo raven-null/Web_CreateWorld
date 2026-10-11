@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { authClient } from "../lib/auth-client";
 import { showToast } from "../lib/toast";
 import ReportDialog from "../components/ReportDialog";
+import PageLoader from "../components/PageLoader";
 
 /** 世界详情接口返回结构 */
 interface WorldDetail {
@@ -103,7 +104,7 @@ export default function WorldPage() {
   };
 
   if (loading) {
-    return <div className="loading">{slowHint || "加载中…"}</div>;
+    return <PageLoader variant="page" label={slowHint || "加载中…"} />;
   }
   if (error) {
     return (

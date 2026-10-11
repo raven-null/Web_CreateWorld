@@ -291,6 +291,254 @@ a:hover {
   padding: 24px 0;
 }
 
+/* ============ 翻页加载动画（档案馆主题配色） ============
+   改编自 Uiverse.io 的 Nawsome 作品：翻页书本 + 六张纸逐页翻动。
+   配色不用原作的蓝紫渐变，改为本项目的金铜色系；深色底上「纸页」用偏亮的暖白，
+   保证在深色背景上依然看得清，同时与 --accent 呼应。 */
+.cw-loader-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cw-loader-wrap.is-page {
+  min-height: 62vh;
+  padding: 32px 0;
+}
+
+.cw-loader-wrap.is-block {
+  padding: 28px 0;
+}
+
+.cw-loader {
+  /* 书本封面：金铜渐变（原作为蓝紫） */
+  --cw-loader-cover: linear-gradient(135deg, #c9a15c, #8a6d3b);
+  /* 纸页投影：偏暖的深色，贴合深底 */
+  --cw-loader-shadow: rgba(0, 0, 0, 0.45);
+  /* 纸页颜色：浅铜色；折页略亮 */
+  --cw-loader-page: rgba(232, 224, 211, 0.26);
+  --cw-loader-page-fold: rgba(232, 224, 211, 0.44);
+  --cw-loader-text: var(--text-dim);
+  --cw-loader-duration: 3s;
+  width: 150px;
+  height: 105px;
+  position: relative;
+}
+
+.cw-loader::before,
+.cw-loader::after {
+  --r: -6deg;
+  content: "";
+  position: absolute;
+  bottom: 6px;
+  width: 90px;
+  top: 80%;
+  box-shadow: 0 16px 12px var(--cw-loader-shadow);
+  transform: rotate(var(--r));
+}
+
+.cw-loader::before {
+  left: 3px;
+}
+
+.cw-loader::after {
+  --r: 6deg;
+  right: 3px;
+}
+
+.cw-loader div {
+  width: 100%;
+  height: 100%;
+  border-radius: 13px;
+  position: relative;
+  z-index: 1;
+  perspective: 600px;
+  box-shadow: 0 6px 16px var(--cw-loader-shadow);
+  background-image: var(--cw-loader-cover);
+}
+
+.cw-loader div ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  position: relative;
+}
+
+.cw-loader div ul li {
+  --r: 180deg;
+  --o: 0;
+  --c: var(--cw-loader-page);
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  transform-origin: 100% 50%;
+  color: var(--c);
+  opacity: var(--o);
+  transform: rotateY(var(--r));
+  animation: cw-page-flip var(--cw-loader-duration) ease infinite;
+}
+
+.cw-loader div ul li:nth-child(2) {
+  --c: var(--cw-loader-page-fold);
+  animation-name: cw-page-2;
+}
+
+.cw-loader div ul li:nth-child(3) {
+  --c: var(--cw-loader-page-fold);
+  animation-name: cw-page-3;
+}
+
+.cw-loader div ul li:nth-child(4) {
+  --c: var(--cw-loader-page-fold);
+  animation-name: cw-page-4;
+}
+
+.cw-loader div ul li:nth-child(5) {
+  --c: var(--cw-loader-page-fold);
+  animation-name: cw-page-5;
+}
+
+.cw-loader div ul li svg {
+  width: 68px;
+  height: 90px;
+  display: block;
+}
+
+.cw-loader div ul li:first-child {
+  --r: 0deg;
+  --o: 1;
+}
+
+.cw-loader div ul li:last-child {
+  --o: 1;
+}
+
+.cw-loader span {
+  display: block;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 18px;
+  text-align: center;
+  color: var(--cw-loader-text);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+@keyframes cw-page-flip {
+  0% {
+    transform: rotateY(180deg);
+    opacity: 0;
+  }
+
+  20% {
+    opacity: 1;
+  }
+
+  35%,
+  100% {
+    opacity: 0;
+  }
+
+  50%,
+  100% {
+    transform: rotateY(0deg);
+  }
+}
+
+@keyframes cw-page-2 {
+  0% {
+    transform: rotateY(180deg);
+    opacity: 0;
+  }
+
+  20% {
+    opacity: 1;
+  }
+
+  35%,
+  100% {
+    opacity: 0;
+  }
+
+  50%,
+  100% {
+    transform: rotateY(0deg);
+  }
+}
+
+@keyframes cw-page-3 {
+  15% {
+    transform: rotateY(180deg);
+    opacity: 0;
+  }
+
+  35% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+
+  65%,
+  100% {
+    transform: rotateY(0deg);
+  }
+}
+
+@keyframes cw-page-4 {
+  30% {
+    transform: rotateY(180deg);
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  65%,
+  100% {
+    opacity: 0;
+  }
+
+  80%,
+  100% {
+    transform: rotateY(0deg);
+  }
+}
+
+@keyframes cw-page-5 {
+  45% {
+    transform: rotateY(180deg);
+    opacity: 0;
+  }
+
+  65% {
+    opacity: 1;
+  }
+
+  80%,
+  100% {
+    opacity: 0;
+  }
+
+  95%,
+  100% {
+    transform: rotateY(0deg);
+  }
+}
+
+/* 尊重「减少动态效果」偏好：不再翻页，改为淡入淡出 */
+@media (prefers-reduced-motion: reduce) {
+  .cw-loader div ul li {
+    animation: none;
+    --o: 1;
+    --r: 0deg;
+  }
+}
+
 /* ============ 表格 ============ */
 .table {
   width: 100%;

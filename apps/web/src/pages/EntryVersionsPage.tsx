@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { formatTime } from "../lib/format";
 import TipTapRenderer from "../components/TipTapRenderer";
+import PageLoader from "../components/PageLoader";
 import { parseDoc, type TipTapDoc } from "../lib/tiptap-json";
 
 /** 历史版本列表项 */
@@ -125,7 +126,7 @@ export default function EntryVersionsPage() {
       {selected !== null && (
         <div className="section">
           <h2 className="section-title">版本 v{selected} 预览</h2>
-          {preview === null && <div className="loading">加载中…</div>}
+          {preview === null && <PageLoader variant="block" label="加载中…" />}
           {preview && (
             <article className="entry-body">
               <TipTapRenderer doc={preview} />

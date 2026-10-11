@@ -4,6 +4,7 @@ import type { TimeGranularity, TimeNumberStyle } from "@create-world/core";
 import { api } from "../lib/api";
 import { formatEventTime } from "../lib/format";
 import { showToast } from "../lib/toast";
+import PageLoader from "../components/PageLoader";
 
 /** 纪元 */
 interface EraItem {
@@ -195,7 +196,7 @@ export default function WorldTimelinePage() {
     return <div className="notice error">{error}</div>;
   }
   if (!data) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
 
   const undetermined = data.events.filter((event) => event.timeUndetermined);

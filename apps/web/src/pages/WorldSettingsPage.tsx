@@ -4,6 +4,7 @@ import { ROLE_LABELS, VISIBILITY_LABELS, type MemberRole, type WorldVisibility }
 import { api } from "../lib/api";
 import { formatTime } from "../lib/format";
 import { showToast } from "../lib/toast";
+import PageLoader from "../components/PageLoader";
 
 /** 世界详情（设置页用到的字段） */
 interface WorldDetail {
@@ -111,7 +112,7 @@ export default function WorldSettingsPage() {
     return <div className="notice error">{error}</div>;
   }
   if (!world) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
   if (world.myRole !== "owner" && world.myRole !== "admin") {
     return <div className="notice error">需要世界管理员权限才能进入设置</div>;

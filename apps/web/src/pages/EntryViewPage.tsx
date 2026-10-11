@@ -7,6 +7,7 @@ import { showToast } from "../lib/toast";
 import ReportDialog from "../components/ReportDialog";
 import TipTapRenderer from "../components/TipTapRenderer";
 import { parseDoc, type TipTapDoc } from "../lib/tiptap-json";
+import PageLoader from "../components/PageLoader";
 
 /** 条目详情接口返回结构 */
 interface EntryDetail {
@@ -81,7 +82,7 @@ export default function EntryViewPage() {
     return <div className="notice error">{error}</div>;
   }
   if (!detail) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
 
   const isWorldAdmin = detail.myRole === "owner" || detail.myRole === "admin";

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { formatTime } from "../lib/format";
+import PageLoader from "../components/PageLoader";
 
 /** 世界详情（本页只用到部分字段） */
 interface WorldInfo {
@@ -175,21 +176,31 @@ export default function WorldEntriesPage() {
           </form>
         )}
 
-        {loading && <div className="loading">加载中…</div>}
+        {loading && <PageLoader variant="block" label="加载中…" />}
         {!loading && entries.length === 0 && <div className="empty">还没有条目</div>}
 
         <div className="entry-list">
           {entries.map((entry) => (
-            <Link key={entry.id} to={`/w/${worldId}/entries/${entry.id}`} className="entry-row">
-              <span className="entry-row-title">
-                {entry.title}
-                {entry.protected && <span className="badge">保护</span>}
-              </span>
-              <span className="entry-row-meta">
-                {entry.lastEditorName && `${entry.lastEditorName} · `}
-                {entry.wordCount} 字 · {formatTime(entry.updatedAt)}
-              </span>
-            </Link>
+            <div key={entry.id} className="entry-row-wrap">
+              <Link to={`/w/${worldId}/entries/${entry.id}`} className="entry-row">
+                <span className="entry-row-title">
+                  {entry.title}
+                  {entry.protected && <span className="badge">保护</span>}
+                </span>
+                <span className="entry-row-meta">
+                  {entry.lastEditorName && `${entry.lastEditorName} · `}
+                  {entry.wordCount} 字 · {formatTime(entry.updatedAt)}
+                </span>
+              </Link>
+              {/* 回到画布并把该条目居中高亮：条目与节点是同一份数据，两个视图之间互通 */}
+              <Link
+                to={`/w/${worldId}/canvas?cat=${entry.categoryId}&focus=${entry.id}`}
+                className="entry-row-locate"
+                title="在画布中定位这个条目"
+              >
+                画布
+              </Link>
+            </div>
           ))}
         </div>
       </section>

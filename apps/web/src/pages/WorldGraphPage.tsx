@@ -13,6 +13,7 @@ import {
   type SimulationNodeDatum,
 } from "d3-force";
 import { api } from "../lib/api";
+import PageLoader from "../components/PageLoader";
 
 /** 关系图接口返回结构 */
 interface GraphData {
@@ -446,7 +447,7 @@ export default function WorldGraphPage() {
     return <div className="notice error">{error}</div>;
   }
   if (loading || !world) {
-    return <div className="loading">加载中…</div>;
+    return <PageLoader variant="block" label="加载中…" />;
   }
 
   return (
