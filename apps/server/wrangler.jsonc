@@ -19,11 +19,11 @@
   ],
   "assets": {
     "directory": "../web/dist",
+    // SPA 回退：前端路由需要它。
+    // ⚠️ 注意：回退会把「未命中的请求」也返回 index.html（200），包括已失效的构建产物；
+    // 曾尝试用 Worker 接管 /assets/* 来纠正，结果把**真实资源**也打成 404，已回滚。
+    // 该风险的兜底改在前端：入口 chunk 加载失败时自动刷新一次（见 lib/api.ts）。
     "not_found_handling": "single-page-application",
-    // 只让 /api/* 交 Worker；
-    // 首页 HTML 保持静态直出——曾尝试让 Worker 接管 `/` 以便加缓存头，
-    // 但 assets 返回的 HTML 响应会重定向到 `/`，两者叠加形成 307 死循环（实测），
-    // 因此首页缓存头改用 `_headers` 声明（对 HTML 不生效，属已知限制，不再用 Worker 绕）。
     "run_worker_first": ["/api/*"],
     "binding": "ASSETS"
   }
