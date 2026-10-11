@@ -9104,18 +9104,9 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
 
     header.innerHTML = "";
 
-    // 左：颜色（标题 + 当前色圆点 + 平铺色点 + 自选色）
+    // 左：颜色（胶囊本身就是分类名与状态显示，不再需要标题与当前色小圆点）
     var colorGroup = document.createElement("div");
     colorGroup.className = "bridge-color";
-    var trigger = document.createElement("span");
-    trigger.className = "bridge-color-label";
-    trigger.textContent = "颜色";
-    var currentDot = document.createElement("span");
-    currentDot.className = "bridge-current-dot";
-    currentDot.id = "bridgeCurrentColor";
-    trigger.appendChild(currentDot);
-    colorGroup.appendChild(trigger);
-
     var dotRow = document.createElement("div");
     dotRow.className = "bridge-color-dots";
     dotRow.id = COLOR_DOTS_ID;
@@ -9484,16 +9475,37 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     renderPalettePanel();
   }
 
-  /** 保存面板（添加或改说明） */
+  /**
+   * 保存弹窗内容。
+   * 「添加」模式：颜色 + 说明一起写入。
+   * 「修改」模式：颜色与说明都可以改——配色变了就等价于「移除旧色、加入新色」。
+   */
   function savePalettePanel() {
     var colorInput = document.getElementById("bridgePaletteColor");
     var labelInput = document.getElementById("bridgePaletteLabel");
-    var color = palettePanel.mode === "edit" ? palettePanel.editColor : colorInput ? colorInput.value : "";
+    var pickedColor = colorInput ? colorInput.value : "";
     var label = labelInput ? labelInput.value : "";
-    if (!color) {
-      return;
+
+    if (palettePanel.mode === "edit" && palettePanel.editColor) {
+      var origin = palettePanel.editColor;
+      if (pickedColor && pickedColor !== origin) {
+        // 改色：旧色移除（预设色会被标记隐藏），新色带上新说明
+        removePaletteColor(origin);
+        addPaletteColor(pickedColor, label);
+      } else {
+        // 只改说明
+        var palette = readPalette();
+        if (label && String(label).trim()) {
+          palette.labels[origin] = String(label).trim().slice(0, 10);
+        } else {
+          delete palette.labels[origin];
+        }
+        writePalette(palette);
+      }
+    } else if (pickedColor) {
+      addPaletteColor(pickedColor, label);
     }
-    addPaletteColor(color, label);
+
     closePalettePanel();
     buildColorDots();
   }
@@ -9555,19 +9567,20 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   }
 
   /**
-   * 取「写在颜色块上的文字」该用什么颜色：按背景亮度选黑/白，保证看得清。
+   * 取「写在颜色块上的文字」该用什么颜色：默认白字，只有背景很浅时才换成深色。
    * @param {string} hex 十六进制色值
    * @returns {string} 文字颜色
    */
   function textColorOn(hex) {
     if (!isHexColor(hex)) {
-      return "#e8e0d3";
+      return "#ffffff";
     }
     var r = parseInt(hex.slice(1, 3), 16);
     var g = parseInt(hex.slice(3, 5), 16);
     var b = parseInt(hex.slice(5, 7), 16);
     var luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.62 ? "#1c1915" : "#ffffff";
+    // 阈值取 0.78：绝大多数颜色用白字（保持统一），只有浅黄这类很亮的底才转深色
+    return luminance > 0.78 ? "#1c1915" : "#ffffff";
   }
 
   /**
@@ -9590,27 +9603,35 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       var item = items[i];
       var isActive = item.color === activeColor;
 
-      // 整个胶囊就是按钮：底色 = 颜色，说明文字写在里面
-      var pill = document.createElement("button");
-      pill.type = "button";
+      // 胶囊 = 颜色 + 说明文字；选中时整体高亮
+      var pill = document.createElement("span");
       pill.className = "bridge-pill" + (isActive ? " is-active" : "");
       pill.dataset.c = item.color;
       pill.style.background = item.hex;
       pill.style.color = textColorOn(item.hex);
-      pill.title = item.label + "（" + item.color + "）　双击改说明";
+      pill.title = item.label + "（" + item.color + "）";
 
       var label = document.createElement("span");
       label.className = "bridge-pill-label";
       label.textContent = item.label;
       pill.appendChild(label);
 
-      var remove = document.createElement("span");
-      remove.className = "bridge-pill-remove";
-      remove.title = "移除「" + item.label + "」";
-      remove.setAttribute("role", "button");
-      remove.setAttribute("aria-label", "移除 " + item.label);
-      remove.textContent = "×";
-      pill.appendChild(remove);
+      // 悬浮才出现的操作：修改 / 删除
+      var actions = document.createElement("span");
+      actions.className = "bridge-pill-actions";
+      var editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "bridge-pill-action";
+      editButton.dataset.action = "edit";
+      editButton.textContent = "修改";
+      var removeButton = document.createElement("button");
+      removeButton.type = "button";
+      removeButton.className = "bridge-pill-action";
+      removeButton.dataset.action = "remove";
+      removeButton.textContent = "删除";
+      actions.appendChild(editButton);
+      actions.appendChild(removeButton);
+      pill.appendChild(actions);
 
       container.appendChild(pill);
     }
@@ -9632,54 +9653,41 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       if (!target || !target.closest) {
         return;
       }
-      // 移除按钮优先于选色
-      var removeButton = target.closest(".bridge-pill-remove");
-      if (removeButton) {
-        event.stopPropagation();
-        var pillToRemove = removeButton.closest(".bridge-pill");
-        if (pillToRemove) {
-          removePaletteColor(pillToRemove.dataset.c);
+      var pill = target.closest(".bridge-pill");
+      if (pill) {
+        var action = target.closest(".bridge-pill-action");
+        if (action) {
+          event.stopPropagation();
+          if (action.dataset.action === "remove") {
+            removePaletteColor(pill.dataset.c);
+          } else {
+            openEditColorPanel(pill.dataset.c);
+          }
           buildColorDots();
+          return;
+        }
+        // 点胶囊本体 = 选这个颜色（新节点的默认色）
+        App._setGenColor(pill.dataset.c);
+        var all = container.querySelectorAll(".bridge-pill");
+        for (var k = 0; k < all.length; k += 1) {
+          all[k].classList.toggle("is-active", all[k].dataset.c === pill.dataset.c);
         }
         return;
       }
       if (target.closest(".bridge-add")) {
         openAddColorPanel();
-        return;
       }
-      var pill = target.closest(".bridge-pill");
-      if (pill) {
-        // 单击 = 选这个颜色（新节点的默认色）
-        App._setGenColor(pill.dataset.c);
-        updateCurrentColor(pill.dataset.c);
-        var all = container.querySelectorAll(".bridge-pill");
-        for (var k = 0; k < all.length; k += 1) {
-          all[k].classList.toggle("is-active", all[k].dataset.c === pill.dataset.c);
-        }
-      }
-    };
-
-    // 双击胶囊 = 改说明（与单击选色不冲突）
-    container.ondblclick = function (event) {
-      var pill = event.target && event.target.closest ? event.target.closest(".bridge-pill") : null;
-      if (!pill) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      openEditColorPanel(pill.dataset.c);
     };
 
     updateCurrentColor(activeColor);
   }
 
-  /** 刷新「当前颜色」小圆点的颜色 */
-  function updateCurrentColor(color) {
-    var dot = document.getElementById("bridgeCurrentColor");
-    if (!dot) {
-      return;
-    }
-    dot.style.background = hexForColor(color);
+  /**
+   * 兼容保留的空实现：当前选中的颜色已由胶囊自身的高亮表达（.bridge-pill.is-active），
+   * 不再需要额外的「当前色小圆点」。保留函数与调用点是为了不破坏历史引用。
+   */
+  function updateCurrentColor() {
+    // 无需操作
   }
 
   /**
@@ -9719,25 +9727,26 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       ".header .header-brand{display:none !important}",
       // 调色板：文字直接写在颜色块里（彩色胶囊），颜色即分类名
       ".bridge-color{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0}",
-      ".bridge-color-label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary);",
-      "white-space:nowrap;flex-shrink:0}",
-      ".bridge-current-dot{width:10px;height:10px;border-radius:50%;display:inline-block;",
-      "box-shadow:0 0 0 1px rgba(255,255,255,.18)}",
-      ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:hidden;",
-      "scrollbar-width:none;padding:2px 0}",
+      ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:visible;",
+      "scrollbar-width:none;padding:3px 0}",
       ".bridge-color-dots::-webkit-scrollbar{display:none}",
-      // 一个颜色 = 一个胶囊：底色是颜色，说明文字写在里面
-      ".bridge-pill{display:inline-flex;align-items:center;gap:6px;flex-shrink:0;border-radius:999px;",
-      "border:2px solid transparent;padding:4px 8px 5px 12px;font-family:inherit;font-size:13px;font-weight:600;",
+      // 胶囊：底色=颜色，说明文字写在里面；文字颜色由 JS 按亮度自适应（默认白字）
+      ".bridge-pill{position:relative;display:inline-flex;align-items:center;flex-shrink:0;border-radius:999px;",
+      "border:2px solid transparent;padding:4px 12px 5px;font-family:inherit;font-size:13px;font-weight:600;",
       "line-height:1.2;letter-spacing:.2px;cursor:pointer;text-shadow:0 1px 2px rgba(0,0,0,.35);",
       "transition:box-shadow .15s,transform .15s}",
-      ".bridge-pill:hover{transform:translateY(-1px)}",
-      ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.5)}",
+      // 选中的胶囊整体高亮
+      ".bridge-pill.is-active{border-color:#e8e0d3;box-shadow:0 0 0 2px rgba(201,161,92,.55)}",
       ".bridge-pill-label{white-space:nowrap;pointer-events:none}",
-      ".bridge-pill-remove{width:16px;height:16px;border-radius:50%;display:inline-flex;align-items:center;",
-      "justify-content:center;font-size:14px;font-weight:400;line-height:1;opacity:.6;cursor:pointer;",
-      "background:rgba(0,0,0,.18);transition:opacity .15s,background .15s}",
-      ".bridge-pill-remove:hover{opacity:1;background:rgba(0,0,0,.45)}",
+      // 悬浮才出现的「修改 / 删除」
+      ".bridge-pill-actions{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);",
+      "display:none;z-index:130;gap:2px;padding:3px;border-radius:8px;background:var(--bg-card);",
+      "border:1px solid var(--border-light);box-shadow:var(--shadow-md);white-space:nowrap}",
+      ".bridge-pill:hover .bridge-pill-actions,.bridge-pill:focus-within .bridge-pill-actions{display:inline-flex}",
+      ".bridge-pill-action{border:0;background:transparent;color:var(--text-secondary);font-family:inherit;",
+      "font-size:12px;line-height:1.6;padding:2px 10px;border-radius:5px;cursor:pointer;white-space:nowrap}",
+      ".bridge-pill-action:hover{background:var(--bg-hover);color:var(--text-primary)}",
+      ".bridge-pill-action[data-action='remove']:hover{color:#e07a6a}",
       ".bridge-add{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 12px;border-radius:999px;",
       "border:1px dashed var(--border-light);background:transparent;color:var(--text-secondary);font-family:inherit;",
       "font-size:12px;cursor:pointer;flex-shrink:0;transition:color .15s,border-color .15s}",
