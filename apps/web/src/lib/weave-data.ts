@@ -37,19 +37,20 @@ export interface EntryDetail {
  * 分类 → 画布节点颜色。
  *
  * ⚠️ 必须与 `apps/web/public/weave/bridge.js` 里的 `COLOR_CATEGORY` 保持一致：
- * 那份映射决定「调色板圆点上标着什么分类名」，这份决定「节点实际画成什么颜色」。
- * 红色是自定义十六进制——Weave 预设色里没有红色，而人物用红更符合直觉。
+ * 那份映射决定「调色板里的颜色标注着什么分类」，这份决定「节点实际画成什么颜色」。
+ * 红色是自定义十六进制（Weave 预设色里没有红色，而人物用红更符合直觉），
+ * 其余用 Weave 预设色名，保证顶栏调色板里有对应胶囊。
  */
 const CATEGORY_COLOR: Record<string, string> = {
   人物: "#d9534f",
-  地点: "yellow",
+  地点: "blue",
   势力: "orange",
   物品: "cyan",
   事件: "green",
 };
 
-/** 分类名不在映射表中时的兜底颜色（与桥里的红色一致，避免出现无名颜色） */
-const FALLBACK_COLOR = "#d9534f";
+/** 给自定义分类轮流分配的颜色（与上面五个预设色不重复，保证任意两个分类颜色不同） */
+const EXTRA_COLORS = ["#8f7fbf", "#bf8f6a", "#5fa8a0", "#a8a05f", "#b06a8f", "#6a8fbf"];
 
 /** 节点尺寸（Weave 存档单位是「格」，1 格 = 20 像素） */
 const NODE_SIZE = { w: 9, h: 4 };
@@ -59,11 +60,23 @@ const SUMMARY_LIMIT = 96;
 
 /**
  * 取分类对应的画布颜色。
+ *
+ * 内置五类各有固定颜色；**自定义分类按它在世界里的顺序轮流分配**
+ * （同一个分类每次算出来都一样，不会一会儿紫一会儿绿）。这样任何分类都有颜色，
+ * 不会像早先那样——凡是没写进映射表的分类全被画成同一个颜色。
+ *
  * @param categoryName 分类名
- * @returns 颜色（预设色名或十六进制；未知分类回落为兜底色）
+ * @param allCategoryNames 世界里的全部分类名（决定自定义类的取色顺序），可不传
+ * @returns 颜色（预设色名或十六进制）
  */
-export function colorOfCategory(categoryName: string): string {
-  return CATEGORY_COLOR[categoryName] ?? FALLBACK_COLOR;
+export function colorOfCategory(categoryName: string, allCategoryNames: string[] = []): string {
+  const preset = CATEGORY_COLOR[categoryName];
+  if (preset) {
+    return preset;
+  }
+  const index = allCategoryNames.indexOf(categoryName);
+  const slot = index >= 0 ? index : 0;
+  return EXTRA_COLORS[slot % EXTRA_COLORS.length] ?? "#8f7fbf";
 }
 
 /**
@@ -73,6 +86,7 @@ export function colorOfCategory(categoryName: string): string {
  * @param layout 本地布局缓存（条目 id → 坐标）
  * @param categoryName 分类名（分区标签）
  * @param categoryId 分类 id（分区 id 用）
+ * @param allCategoryNames 世界里的全部分类名（自定义分类取色用）
  * @returns Weave 存档
  */
 export function buildCanvasPayload(
@@ -81,6 +95,7 @@ export function buildCanvasPayload(
   layout: Record<string, { x: number; y: number; w?: number; h?: number }>,
   categoryName: string,
   categoryId: string,
+  allCategoryNames: string[] = [],
 ): WeavePayload {
   const perRow = 3;
   const spacing = { x: 12, y: 5 };
@@ -92,7 +107,7 @@ export function buildCanvasPayload(
       id: entry.id,
       label: entry.title,
       desc: (entry.summary ?? "").slice(0, SUMMARY_LIMIT),
-      color: colorOfCategory(categoryName),
+      color: colorOfCategory(categoryName, allCategoryNames),
       // 有本地缓存的沿用缓存坐标，否则按网格落位（新建条目排到末尾）
       x: cached ? cached.x : column * (NODE_SIZE.w + spacing.x),
       y: cached ? cached.y : row * (NODE_SIZE.h + spacing.y),

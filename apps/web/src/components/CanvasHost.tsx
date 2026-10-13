@@ -520,7 +520,14 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
           .filter((edge) => idSet.has(edge.from) && idSet.has(edge.to));
 
         const layout = readLayout(targetWorldId, categoryId);
-        const payload = buildCanvasPayload(entries, edges, layout, categoryName, categoryId);
+        const payload = buildCanvasPayload(
+          entries,
+          edges,
+          layout,
+          categoryName,
+          categoryId,
+          world.categories.map((item) => item.name),
+        );
 
         // 详情缓存用于写回时判断「是否真的变化」（列表接口不含 blocks）
         detailCacheRef.current = new Map();

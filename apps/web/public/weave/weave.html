@@ -9055,13 +9055,15 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   }
 
   /**
-   * 颜色 → 分类名。
-   * 「人物=红、地点=黄」按用户指定；其余按语义补足，保证五色各有唯一分类。
-   * 值的写法必须与画布数据一致：预设色用色名，红色是自选十六进制。
+   * 颜色 → 分类名（五个分类各占一个颜色，保证彼此不同）。
+   *
+   * 与父页面 `apps/web/src/lib/weave-data.ts` 的 `CATEGORY_COLOR` 必须一致：
+   * 那边决定节点画成什么颜色，这边决定调色板里的颜色标注成什么分类。
+   * 值的写法与画布数据一致：预设色用色名，人物用的是自定义十六进制（Weave 预设里没有红色）。
    */
   var COLOR_CATEGORY = {
     red: "人物",
-    yellow: "地点",
+    blue: "地点",
     orange: "势力",
     cyan: "物品",
     green: "事件",
@@ -10305,13 +10307,16 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     var x = isOut ? source.x + sourceW + gap : source.x - sourceW - gap;
     var y = source.y;
 
+    // 走「选择后创建」这条通道：生成带类型的 id，否则会被 wrapNodeCreation 拦下
+    var nodeTitle = String(title || "").trim().slice(0, 60) || "未命名条目";
+    pendingNodeId = makeTypedNodeId(nodeTitle);
     var newId = App._addNodeAt(x, y, true);
     if (!newId) {
       return false;
     }
     var node = App._getNodeById ? App._getNodeById(newId) : null;
     if (node) {
-      node.label = String(title || "").trim().slice(0, 60) || "未命名条目";
+      node.label = nodeTitle;
       // 直接改数据后同步一次显示与存档（避免再走一次完整 renderCanvas）
       if (typeof App._updateNodeAppearance === "function") {
         var el = App._nodeElMap && App._nodeElMap.get(newId);
@@ -10689,6 +10694,49 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   /** 待使用的节点 id（一次性）：由「创建节点」弹窗设置，供包装后的 `_genId` 取用 */
   var pendingNodeId = "";
 
+  /**
+   * 确保「人物 / 地点 / 势力 / 物品 / 事件」五类对应的颜色都在调色板里。
+   *
+   * 人物用红（自定义色）、其余用 Weave 预设色；缺哪个补哪个，用户删过的颜色在本次会话内不补回，
+   * 刷新后重新补齐——这样五类颜色始终可用，也不会跟用户当下的删除操作打架。
+   */
+  function ensureCategoryColors() {
+    var seenKey = "cw_category_colors_ensured";
+    try {
+      if (window.sessionStorage && sessionStorage.getItem(seenKey) === "1") {
+        return;
+      }
+    } catch (error) {
+      // sessionStorage 不可用：按首次处理
+    }
+    var palette = readPalette();
+    var required = [];
+    for (var i = 0; i < PRESET_DEFS.length; i += 1) {
+      required.push(PRESET_DEFS[i].color);
+    }
+    var existing = paletteItems().map(function (item) {
+      return item.color;
+    });
+    var added = [];
+    for (var j = 0; j < required.length; j += 1) {
+      var color = required[j];
+      if (existing.indexOf(color) >= 0 || (palette.hidden || []).indexOf(color) >= 0) {
+        // 已在画布上，或用户明确删过 → 不动
+        continue;
+      }
+      addPaletteColor(color, "");
+      added.push(color);
+    }
+    if (added.length > 0) {
+      log("已补齐分类颜色：", added.join("、"));
+    }
+    try {
+      window.sessionStorage.setItem(seenKey, "1");
+    } catch (error) {
+      // 忽略
+    }
+  }
+
   /** 当前世界的分类列表（父页面在注入数据时一并下发；Weave 自身没有分类概念） */
   var worldCategories = [];
 
@@ -10730,6 +10778,29 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
    */
   function makeTypedNodeId(typeName) {
     return String(typeName || "节点") + "-" + Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 6);
+  }
+
+  /**
+   * 包装 `App._addNodeAt`：**只有经过「创建节点」弹窗选择类型后才允许建节点**。
+   *
+   * 需求明确：双击画布空白处只是打开类型选择弹窗，本身绝不产生节点。
+   * 这里加一道保险——没有待用 id（即没走过选择流程）时直接拦下，避免 Weave 自身的
+   * 「双击空白建节点」等路径绕过弹窗偷偷建出一个「新节点」。
+   */
+  function wrapNodeCreation() {
+    if (typeof App._addNodeAt !== "function" || App._addNodeAtWrapped) {
+      return;
+    }
+    var originalAddNodeAt = App._addNodeAt.bind(App);
+    App._addNodeAtWrapped = true;
+    App._addNodeAt = function (worldX, worldY, asPosition) {
+      if (!pendingNodeId) {
+        log("拦截了一次未经选择的建节点（请双击空白处先选类型）");
+        return "";
+      }
+      return originalAddNodeAt(worldX, worldY, asPosition);
+    };
+    log("已限制节点创建：必须先从弹窗选择类型");
   }
 
   /** 关闭「创建节点」弹窗 */
@@ -11661,6 +11732,7 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
   /** 启动：挂 UI、重做顶栏、颜色标注与自定义色样式、侧边栏开关，然后通知父页面下发数据 */
   function boot() {
     mountUi();
+    ensureCategoryColors();
     rebuildHeader();
     buildColorDots();
     bindPalettePanelEvents();
@@ -11671,6 +11743,7 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     bindSocketDragToPicker();
     bindDoubleClickCreate();
     wrapGenId();
+    wrapNodeCreation();
     bindExportMenu();
     bindExportMenuGlobalEvents();
     startNodeColorSync();
