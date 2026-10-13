@@ -10118,34 +10118,54 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
         danger: true,
         nodes: listed,
         onConfirm: function () {
-          log("已确认清空，开始删除画布内容");
+          log("已确认清空，开始清空画布内容");
           var allIds = nodes.map(function (node) {
             return node.id;
           });
-          // 画布清空：节点交给 Weave 自己的删除路径（会一并清连线、分区归属、选中态与 DOM）
+
+          // 先让 Weave 走一遍它自己的删除流程：清理连线、分区归属、选中态、收起记录与 DOM
           if (allIds.length > 0 && typeof App.removeNodes === "function") {
             try {
               App.removeNodes(allIds);
             } catch (error) {
-              log("removeNodes 出错，退回手动清空：", error);
-              App.canvasState.nodes = [];
-              App.canvasState.connections = [];
-              if (typeof App._destroyNodeEls === "function") {
-                App._destroyNodeEls(allIds);
-              }
+              log("removeNodes 出错，改用直接清空：", error);
             }
           }
-          // 分区（分类画框）也清掉：它只属于当前分类画布
-          App.canvasState.regions = [];
+
+          /**
+           * 无论上面走到哪一步，这里把画布状态显式清空到底：
+           * 节点、连线、**分区画框**全部置空；分区是从 canvasState.regions 渲染的，置空后重绘即消失。
+           * 直接赋值而不是依赖 removeNodes，才能保证「整个画面都空」这件事必然发生。
+           */
+          App.canvasState.nodes = [];
           App.canvasState.connections = [];
+          App.canvasState.regions = [];
+          if (App.selectedNodeIds && typeof App.selectedNodeIds.clear === "function") {
+            App.selectedNodeIds.clear();
+          }
+          if (App.selectedConnIds && typeof App.selectedConnIds.clear === "function") {
+            App.selectedConnIds.clear();
+          }
+          App.selectedRegionId = null;
+
+          if (typeof App._destroyNodeEls === "function" && allIds.length > 0) {
+            App._destroyNodeEls(allIds);
+          }
           if (typeof App.renderCanvas === "function") {
+            // 重绘会重建节点层、分区层与连线层；此时三者都是空的
             App.renderCanvas({ center: false });
           }
           // 触发保存 → 通知父页面；父页面据此删除这些节点对应的条目
-          // （removeNodes 内部已经存过一次快照，这里只补一次显式保存）
           App.saveCanvas();
           notify("画布已清空，正在同步删除条目…");
-          log("清空完成：已删除节点", allIds.length, "个");
+          log(
+            "清空完成：节点",
+            allIds.length,
+            "个｜剩余 nodes",
+            App.canvasState.nodes.length,
+            "regions",
+            App.canvasState.regions.length,
+          );
         },
       });
     };
