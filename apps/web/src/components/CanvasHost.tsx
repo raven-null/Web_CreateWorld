@@ -184,6 +184,9 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
     baselineTitlesRef.current = new Map(payload.nodes.map((node) => [node.id, node.label]));
   }, []);
 
+  /** 当前世界的分类列表：桥里「双击空白 → 选一类」要用（Weave 自身没有分类概念） */
+  const categoriesRef = useRef<Array<{ name: string; color: string }>>([]);
+
   /** 把画布数据发给 iframe（桥未就绪时先存起来，收到 ready 再发） */
   const pushToCanvas = useCallback((payload: WeavePayload, categoryId: string) => {
     // 记录这批内容属于哪个分类：合并写回时用它写缓存，避免分类切换期间张冠李戴
@@ -194,7 +197,11 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
       pendingCategoryRef.current = categoryId;
       return;
     }
-    frame.contentWindow?.postMessage({ type: "weave:data", payload }, window.location.origin);
+    // 一并下发分类列表：桥里「双击空白 → 选择要建哪一类」需要它（Weave 自身没有分类概念）
+    frame.contentWindow?.postMessage(
+      { type: "weave:data", payload, categories: categoriesRef.current },
+      window.location.origin,
+    );
   }, []);
 
   /**
@@ -497,6 +504,8 @@ export default function CanvasHost({ worldId, active }: { worldId: string; activ
         }
 
         const categoryName = world.categories.find((item) => item.id === categoryId)?.name ?? "条目";
+        // 记下分类列表：桥的「双击空白 → 选一类」要用（颜色留空时由桥按分类名兜底）
+        categoriesRef.current = world.categories.map((item) => ({ name: item.name, color: item.color ?? "" }));
 
         // 权限决定画布能否编辑：未登录（canEdit=false）时进入只读，避免注定失败的写请求
         const canEdit = Boolean((world as { canEdit?: boolean }).canEdit);

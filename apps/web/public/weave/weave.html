@@ -8945,6 +8945,10 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
         clearInterval(readyRetryTimer);
         readyRetryTimer = null;
       }
+      // 分类列表随数据一起下发（桥里「双击空白 → 选一类」要用）
+      if (data.categories) {
+        setWorldCategories(data.categories);
+      }
       applyData(data.payload);
       notify("");
       return;
@@ -10504,6 +10508,125 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
    * 比在拖动中精确命中另一个节点的小圆点可靠（画布缩小或节点多时尤其明显）。
    * 轻点连接点不触发（仍然走原来的行为），必须是「拖出去」。
    */
+  /** 拖拽预览线的元素（跟随鼠标，提示正在拉一条关联） */
+  var socketPreviewEl = null;
+  /** 拖拽预览的起点（屏幕坐标） */
+  var socketDragOrigin = { x: 0, y: 0 };
+
+  /** 取（或创建）拖拽预览线 */
+  function ensureSocketPreview() {
+    if (socketPreviewEl && document.body.contains(socketPreviewEl)) {
+      return socketPreviewEl;
+    }
+    socketPreviewEl = document.createElement("div");
+    socketPreviewEl.className = "bridge-socket-preview";
+    document.body.appendChild(socketPreviewEl);
+    return socketPreviewEl;
+  }
+
+  /** 隐藏拖拽预览线 */
+  function hideSocketPreview() {
+    if (socketPreviewEl) {
+      socketPreviewEl.style.display = "none";
+    }
+  }
+
+  /** 更新拖拽预览线：从起点画一条直线跟随鼠标 */
+  function updateSocketPreview(event) {
+    var el = ensureSocketPreview();
+    var dx = event.clientX - socketDragOrigin.x;
+    var dy = event.clientY - socketDragOrigin.y;
+    var length = Math.sqrt(dx * dx + dy * dy);
+    var angle = Math.atan2(dy, dx);
+    el.style.display = "block";
+    el.style.left = socketDragOrigin.x + "px";
+    el.style.top = socketDragOrigin.y + "px";
+    el.style.width = Math.max(length, 1) + "px";
+    el.style.transform = "rotate(" + angle + "rad)";
+  }
+
+  /** 清除节点上的「可作为连接目标」高亮 */
+  function clearSocketTargetHighlight() {
+    var marked = document.querySelectorAll(".node[data-cw-target]");
+    for (var i = 0; i < marked.length; i += 1) {
+      marked[i].removeAttribute("data-cw-target");
+    }
+  }
+
+  /**
+   * 命中测试：屏幕坐标落在哪个节点上（排除起始节点本身）。
+   * @param {number} clientX 屏幕 x
+   * @param {number} clientY 屏幕 y
+   * @param {string} sourceId 起始节点 id（排除）
+   * @returns {string} 命中的节点 id，没有则空串
+   */
+  function nodeIdAtPoint(clientX, clientY, sourceId) {
+    var el = document.elementFromPoint(clientX, clientY);
+    var card = el && el.closest ? el.closest(".node") : null;
+    if (!card || !card.dataset) {
+      return "";
+    }
+    var id = card.dataset.nodeId || "";
+    return id && id !== sourceId ? id : "";
+  }
+
+  /**
+   * 从连接点拖出建立关联。
+   *
+   * 松手时的两种走向（按需求）：
+   *   · 落在另一个节点上 → 直接连上（不用再选）
+   *   · 落在画布空白处 → 弹窗选择要连的节点（也可以现场新建一个）
+   *
+   * 拖动过程中自己画一条预览线：这里用捕获阶段接管了 mousedown，Weave 自身那条跟随鼠标的
+   * 预览线不会再出现，得补一个视觉反馈，否则用户拖的时候看不到任何东西。
+   */
+  function startSocketDrag(sourceId, dir, startEvent) {
+    socketDragOrigin = { x: startEvent.clientX, y: startEvent.clientY };
+    updateSocketPreview(startEvent);
+
+    /** 移动：更新预览线与目标高亮 */
+    var onMove = function (moveEvent) {
+      moveEvent.preventDefault();
+      updateSocketPreview(moveEvent);
+      clearSocketTargetHighlight();
+      var targetId = nodeIdAtPoint(moveEvent.clientX, moveEvent.clientY, sourceId);
+      if (targetId) {
+        var targetEl = document.querySelector('.node[data-node-id="' + targetId + '"]');
+        if (targetEl) {
+          targetEl.setAttribute("data-cw-target", "1");
+        }
+      }
+    };
+
+    /** 收尾：清掉预览线、高亮与临时监听 */
+    var cleanup = function () {
+      hideSocketPreview();
+      clearSocketTargetHighlight();
+      document.removeEventListener("mousemove", onMove, true);
+      document.removeEventListener("mouseup", onUp, true);
+    };
+
+    /** 松手：落在节点上就直接连，落在空白处就弹窗选 */
+    var onUp = function (upEvent) {
+      var targetId = nodeIdAtPoint(upEvent.clientX, upEvent.clientY, sourceId);
+      cleanup();
+      if (targetId) {
+        var created = dir === "out" ? connectNodes(sourceId, targetId) : connectNodes(targetId, sourceId);
+        log("拖到节点上直接连接：", sourceId, dir, targetId, created ? "成功" : "已存在");
+        if (!created) {
+          notify("这条关联已经存在");
+        }
+        return;
+      }
+      log("拖到空白处 → 弹窗选择节点：", dir, sourceId);
+      openNodePicker(sourceId, dir);
+    };
+
+    document.addEventListener("mousemove", onMove, true);
+    document.addEventListener("mouseup", onUp, true);
+  }
+
+  /** 监听连接点上的拖拽：拖出去后按落点决定「直接连」还是「弹窗选」 */
   function bindSocketDragToPicker() {
     var stage = document.getElementById("canvasStage");
     if (!stage || stage.dataset.cwSocketBound === "1") {
@@ -10528,37 +10651,292 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
         var dir = socket.classList.contains("out") ? "out" : "in";
         var startX = event.clientX;
         var startY = event.clientY;
-        var fired = false;
+        var started = false;
 
-        /** 移动超过阈值 → 判定为「从连接点拖出去」 */
-        var onMove = function (moveEvent) {
-          if (fired) {
+        /** 移动超过阈值才算「拖出去」，避免误触 */
+        var onProbe = function (moveEvent) {
+          if (started) {
             return;
           }
           if (Math.abs(moveEvent.clientX - startX) + Math.abs(moveEvent.clientY - startY) < SOCKET_DRAG_THRESHOLD) {
             return;
           }
-          fired = true;
-          cleanup();
-          log("从连接点拖出：", dir, nodeId);
-          openNodePicker(nodeId, dir);
+          started = true;
+          document.removeEventListener("mousemove", onProbe, true);
+          document.removeEventListener("mouseup", onProbeEnd, true);
+          startSocketDrag(nodeId, dir, moveEvent);
         };
 
-        /** 收尾：移除临时监听 */
-        var cleanup = function () {
-          document.removeEventListener("mousemove", onMove, true);
-          document.removeEventListener("mouseup", cleanup, true);
+        /** 未达阈值就松手：什么都不做（等同轻点连接点） */
+        var onProbeEnd = function () {
+          document.removeEventListener("mousemove", onProbe, true);
+          document.removeEventListener("mouseup", onProbeEnd, true);
         };
 
-        document.addEventListener("mousemove", onMove, true);
-        document.addEventListener("mouseup", cleanup, true);
+        document.addEventListener("mousemove", onProbe, true);
+        document.addEventListener("mouseup", onProbeEnd, true);
       },
       true,
     );
-    log("已启用「从连接点拖出 → 选择节点」");
+    log("已启用「连接点拖拽」：拖到节点即连，拖到空白弹窗选");
   }
 
-  // ---------- 导出按钮：悬浮弹出「数据 / 图片」两个选项 ----------
+  // ---------- 双击空白：先选「要建什么」再创建节点 ----------
+
+  /** 创建类型弹窗 id */
+  var CREATE_MENU_ID = "bridgeCreateMenu";
+
+  /** 待使用的节点 id（一次性）：由「创建节点」弹窗设置，供包装后的 `_genId` 取用 */
+  var pendingNodeId = "";
+
+  /** 当前世界的分类列表（父页面在注入数据时一并下发；Weave 自身没有分类概念） */
+  var worldCategories = [];
+
+  /**
+   * 记录父页面下发的分类列表。
+   * @param {Array} categories 形如 [{ name, color }]
+   */
+  function setWorldCategories(categories) {
+    worldCategories = Array.isArray(categories) ? categories.slice() : [];
+    log("已获取分类列表：", worldCategories.map((item) => item.name).join("/"));
+  }
+
+  /**
+   * 包装 `App._genId`：允许在「即将创建节点」时直接指定 id。
+   *
+   * 作用：新建节点要带上是哪一类（如 `人物-x7f2`），而 Weave 内部统一用 `_genId()` 生成 id，
+   * 这里开一个一次性通道：`pendingNodeId` 非空时，下一次 `_genId` 就返回它。
+   */
+  function wrapGenId() {
+    if (typeof App._genId !== "function" || App._genIdWrapped) {
+      return;
+    }
+    var originalGenId = App._genId.bind(App);
+    App._genIdWrapped = true;
+    App._genId = function (prefix) {
+      if (pendingNodeId) {
+        var id = pendingNodeId;
+        pendingNodeId = "";
+        return id;
+      }
+      return originalGenId(prefix);
+    };
+    log("已接管节点 id 生成（用于按类型命名新节点）");
+  }
+
+  /**
+   * 生成节点 id：用类型名 + 短随机串，例如 `人物-x7f2k1`。
+   * 类型名可能是中文，作为 id 一样可用（Weave 只要求字符串唯一）。
+   */
+  function makeTypedNodeId(typeName) {
+    return String(typeName || "节点") + "-" + Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 6);
+  }
+
+  /** 关闭「创建节点」弹窗 */
+  function closeCreateMenu() {
+    var box = document.getElementById(CREATE_MENU_ID);
+    if (box) {
+      box.style.display = "none";
+      box.innerHTML = "";
+    }
+  }
+
+  /**
+   * 打开「创建节点」弹窗：先选一类（人物 / 地点 / 势力 / 物品 / 事件），也可以自定义。
+   *
+   * 为什么不再双击即建：双击直接生成一个「新节点」虽然快，但建成之后还得改名、挑颜色、
+   * 想清楚它是什么；不如在建之前先把「这是哪一类」定下来，节点 id 与颜色一次带到位。
+   *
+   * 说明：节点的**分类归属由当前画布决定**（一个分类一块画布），这里的「类型」用于命名
+   * 与默认颜色——所以点了「地点」而当前是「人物」画布时，节点仍归入人物，这一点在弹窗里写明了。
+   *
+   * @param {number} worldX 双击处的世界坐标 x（新节点落点）
+   * @param {number} worldY 双击处的世界坐标 y
+   */
+  function openCreateMenu(worldX, worldY) {
+    // 类型来自世界分类（父页面下发）；拿不到时用一组默认值兜底
+    var categories = (worldCategories || []).slice();
+    var names = categories.map(function (category) {
+      return category.name;
+    });
+    log("双击空白处：可选类型", names.join("/") || "(使用默认类型)");
+
+    var box = document.getElementById(CREATE_MENU_ID);
+    if (!box) {
+      box = document.createElement("div");
+      box.id = CREATE_MENU_ID;
+      box.className = "bridge-modal";
+      box.style.display = "none";
+      document.body.appendChild(box);
+    }
+
+    var options = (names.length > 0 ? names : ["人物", "地点", "势力", "物品", "事件"])
+      .map(function (name) {
+        var category = categories.find(function (item) {
+          return item.name === name;
+        });
+        var color = category ? category.color : "blue";
+        var hex = typeof App._resolveColor === "function" ? App._resolveColor(color).hex : "#8a8378";
+        return (
+          '<button type="button" class="bridge-create-item" data-name="' +
+          escapeAttr(name) +
+          '"><span class="bridge-create-dot" style="background:' +
+          hex +
+          '"></span><span>' +
+          escapeAttr(name) +
+          "</span></button>"
+        );
+      })
+      .join("");
+
+    var currentName = names.length > 0 ? names[0] : "";
+
+    box.innerHTML =
+      '<div class="bridge-modal-mask" data-create="cancel"></div>' +
+      '<div class="bridge-modal-box bridge-create-box" role="dialog" aria-modal="true">' +
+      '<div class="bridge-modal-head">新建节点' +
+      '<button type="button" class="bridge-modal-close" data-create="cancel" aria-label="关闭">×</button>' +
+      "</div>" +
+      '<div class="bridge-modal-body">' +
+      '<p class="bridge-create-tip">先选一类：</p>' +
+      '<div class="bridge-create-grid">' +
+      options +
+      "</div>" +
+      '<div class="bridge-picker-divider"><span>或者自定义</span></div>' +
+      '<div class="bridge-picker-create">' +
+      '<input type="text" class="bridge-palette-text" id="bridgeCreateCustom" maxlength="20" ' +
+      'placeholder="自己写一个类型，如：神话生物" autocomplete="off" />' +
+      '<button type="button" class="bridge-palette-btn primary" id="bridgeCreateCustomBtn">创建</button>' +
+      "</div>" +
+      '<p class="bridge-create-hint">当前画布是「' +
+      escapeAttr(currentName) +
+      "」分类，新节点会归入这个分类；自定义类型只影响节点的名称与颜色。</p>" +
+      "</div>" +
+      "</div>";
+    box.style.display = "flex";
+
+    /**
+     * 按类型创建节点。
+     * @param {string} typeName 类型名（用于 id 与默认色）
+     */
+    var create = function (typeName) {
+      var name = String(typeName || "").trim().slice(0, 20);
+      if (!name) {
+        return;
+      }
+      closeCreateMenu();
+      var category = categories.find(function (item) {
+        return item.name === name;
+      });
+      if (category && typeof App._setGenColor === "function") {
+        // 选中该分类对应的颜色，新节点直接带上正确的颜色
+        App._setGenColor(category.color);
+        if (typeof buildColorDots === "function") {
+          buildColorDots();
+        }
+      }
+      pendingNodeId = makeTypedNodeId(name);
+      var newId = typeof App._addNodeAt === "function" ? App._addNodeAt(worldX, worldY, false) : "";
+      if (newId && typeof App._getNodeById === "function") {
+        var node = App._getNodeById(newId);
+        if (node) {
+          // 默认标题就是类型名（「新节点」这种占位名没有信息量）
+          node.label = name;
+          var el = App._nodeElMap && App._nodeElMap.get(newId);
+          if (el && typeof App._updateNodeAppearance === "function") {
+            App._updateNodeAppearance(el, node);
+          }
+          App.saveCanvasSnapshot();
+          if (typeof App.renderCanvas === "function") {
+            App.renderCanvas({ center: false });
+          }
+        }
+      }
+      log("已创建节点：", name, newId);
+    };
+
+    box.onclick = function (event) {
+      var target = event.target;
+      if (!target || !target.closest) {
+        return;
+      }
+      if (target.closest("[data-create='cancel']")) {
+        closeCreateMenu();
+        return;
+      }
+      var item = target.closest(".bridge-create-item");
+      if (item) {
+        create(item.dataset.name);
+        return;
+      }
+      if (target.closest("#bridgeCreateCustomBtn")) {
+        var input = document.getElementById("bridgeCreateCustom");
+        create(input ? input.value : "");
+      }
+    };
+    box.onkeydown = function (event) {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeCreateMenu();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        var button = document.getElementById("bridgeCreateCustomBtn");
+        if (button) {
+          button.click();
+        }
+      }
+    };
+    var customInput = document.getElementById("bridgeCreateCustom");
+    if (customInput) {
+      customInput.focus();
+    }
+  }
+
+  /** 双击判定状态（Weave 用 250ms 内同位置两次点击判双击，这里保持一致口径） */
+  var dblClickState = { time: 0, x: 0, y: 0 };
+
+  /**
+   * 接管画布双击：空白处双击 → 弹「创建节点」；文本区域的双击（改标题 / 描述）不拦。
+   */
+  function bindDoubleClickCreate() {
+    var stage = document.getElementById("canvasStage");
+    if (!stage || stage.dataset.cwCreateBound === "1") {
+      return;
+    }
+    stage.dataset.cwCreateBound = "1";
+
+    stage.addEventListener(
+      "click",
+      function (event) {
+        var target = event.target;
+        if (!target || !target.closest) {
+          return;
+        }
+        // 节点上的双击留给 Weave（改标题 / 改描述）；连接点与分区也不管
+        if (target.closest(".node") || target.closest(".socket")) {
+          dblClickState.time = 0;
+          return;
+        }
+        var now = Date.now();
+        var isDouble =
+          now - dblClickState.time < 280 &&
+          Math.abs(event.clientX - dblClickState.x) < 8 &&
+          Math.abs(event.clientY - dblClickState.y) < 8;
+        if (!isDouble) {
+          dblClickState = { time: now, x: event.clientX, y: event.clientY };
+          return;
+        }
+        dblClickState.time = 0;
+        event.preventDefault();
+        event.stopPropagation();
+        var world = typeof App.getWorldPos === "function" ? App.getWorldPos(event.clientX, event.clientY) : { x: 0, y: 0 };
+        openCreateMenu(world.x, world.y);
+      },
+      true,
+    );
+    log("已接管画布双击：空白处双击 → 先选类型再建节点");
+  }
 
   /** 导出菜单元素与隐藏定时器 */
   var exportMenuEl = null;
@@ -10916,6 +11294,21 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
       ".header .header-brand{display:none !important}",
       // 调色板：文字直接写在颜色块里（彩色胶囊），颜色即分类名
       ".bridge-color{display:flex;align-items:center;gap:10px;flex:0 1 auto;min-width:0}",
+      // 连接点拖拽时的预览线与目标高亮
+      ".bridge-socket-preview{position:fixed;height:2px;background:var(--accent);opacity:.85;",
+      "transform-origin:0 50%;pointer-events:none;z-index:1400;display:none;border-radius:2px}",
+      ".node[data-cw-target] .node-header{box-shadow:0 0 0 2px var(--accent),0 0 12px rgba(201,161,92,.5)}",
+      ".node[data-cw-target]{outline:2px dashed rgba(201,161,92,.75);outline-offset:2px}",
+      // 创建节点弹窗：类型选项
+      ".bridge-create-box{width:min(340px,calc(100vw - 28px))}",
+      ".bridge-create-tip{margin:0;font-size:12.5px;color:var(--text-secondary)}",
+      ".bridge-create-grid{display:flex;flex-wrap:wrap;gap:8px}",
+      ".bridge-create-item{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:999px;",
+      "border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-family:inherit;",
+      "font-size:13px;cursor:pointer;transition:border-color .15s,background .15s}",
+      ".bridge-create-item:hover{border-color:var(--accent);background:var(--bg-hover)}",
+      ".bridge-create-dot{width:10px;height:10px;border-radius:50%;display:inline-block}",
+      ".bridge-create-hint{margin:0;font-size:11.5px;color:var(--text-faint);line-height:1.6}",
       // 色点行：横向滚动条与全局同风格（细长），不再单独隐藏
       // 色点行：横向可滚动但**不显示滚动条**（页面级不出现滚动条；内容区如节点列表仍保留细长滚动条）
       ".bridge-color-dots{display:flex;align-items:center;gap:8px;overflow-x:auto;overflow-y:visible;padding:3px 0;",
@@ -11276,6 +11669,8 @@ window.addEventListener('resize', function() { App.applyViewTransform(); });
     wrapBoxSelectMode();
     annotateBoxModeButton();
     bindSocketDragToPicker();
+    bindDoubleClickCreate();
+    wrapGenId();
     bindExportMenu();
     bindExportMenuGlobalEvents();
     startNodeColorSync();
